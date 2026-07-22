@@ -1,0 +1,19 @@
+# {$SITE_ADDRESS} = your domain (auto-HTTPS) in prod, or :80 for local.
+{$SITE_ADDRESS} {
+	# API -> backend (strip the /api prefix before forwarding)
+	handle_path /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# everything else -> frontend SPA
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	# allow larger uploads (matches backend MAX_UPLOAD_BYTES)
+	request_body {
+		max_size 30MB
+	}
+
+	encode gzip
+}
