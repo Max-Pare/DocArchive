@@ -1,8 +1,8 @@
 # --- build stage ---
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 # API is reverse-proxied at /api by Caddy in production
 ENV VITE_API_BASE=/api
