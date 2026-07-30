@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: docarchive
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docarchive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ./.env}
       POSTGRES_DB: docarchive
     volumes:
       - db_data:/var/lib/postgresql/data
@@ -19,6 +19,11 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
+    environment:
+      # `environment:` overrides `env_file:`, so POSTGRES_PASSWORD in ./.env is the
+      # single source of truth for the DB password. Keeping a second copy inside
+      # backend/.env is what silently broke this deploy.
+      DATABASE_URL: postgresql+psycopg2://docarchive:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ./.env}@db:5432/docarchive
     depends_on:
       db:
         condition: service_healthy

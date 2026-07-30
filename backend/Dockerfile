@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# The exec bit must be set inside the build: a ZIP download, an NTFS checkout, or
+# any copy without -p loses it, and CMD ["./entrypoint.sh"] then fails with exit 126.
+RUN chmod +x ./entrypoint.sh
+
 # Non-root user; storage dir is a mounted volume owned to this user at runtime.
 RUN useradd -m appuser && mkdir -p /data/files && chown -R appuser:appuser /data
 USER appuser
