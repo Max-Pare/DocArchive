@@ -1,7 +1,15 @@
+# Unbounded json-file logs will fill a VPS disk. Every service references this.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: docarchive
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ./.env}
@@ -17,6 +25,7 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ./backend/.env
     environment:
@@ -29,16 +38,33 @@ services:
         condition: service_healthy
     volumes:
       - file_data:/data/files
+    # Tesseract rasterizes PDF pages at PDF_DPI into memory; without a ceiling a
+    # large multi-page scan can OOM the whole host, not just this container.
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
 
   frontend:
     build: ./frontend
     restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      # busybox wget ships in nginx:alpine.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     depends_on:
-      - backend
+      backend:
+        # Not just service_started: the backend runs migrations and seeding before it
+        # serves, and the proxy would otherwise 502 through that whole window.
+        condition: service_healthy
 
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -50,8 +76,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
 
 volumes:
   db_data:

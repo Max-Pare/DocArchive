@@ -24,5 +24,10 @@ USER appuser
 
 EXPOSE 8000
 
+# python:3.12-slim has no curl/wget, and adding one just for a probe isn't worth a
+# layer. start-period covers migrations + seed on a cold boot.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
+    CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+
 # entrypoint runs migrations + seed, then serves
 CMD ["./entrypoint.sh"]
