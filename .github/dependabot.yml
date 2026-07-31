@@ -1,0 +1,105 @@
+version: 2
+
+# Strategy: minor + patch updates arrive as ONE grouped PR per ecosystem per week,
+# because reviewing eleven "bump 2.0.1 -> 2.0.2" PRs teaches you to rubber-stamp
+# them. Majors are left ungrouped on purpose - each one needs a human to read the
+# changelog, and CI's smoke job is what tells you whether the stack still boots.
+
+updates:
+  # --- Backend: requirements.txt + requirements-dev.txt -----------------------
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(backend)"
+    labels:
+      - dependencies
+      - backend
+    groups:
+      backend-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # --- Frontend: package.json + package-lock.json ----------------------------
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(frontend)"
+    labels:
+      - dependencies
+      - frontend
+    groups:
+      frontend-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # --- Base images: backend/Dockerfile, frontend/Dockerfile, docker-compose.yml
+  # `directories` (plural) so one entry covers both Dockerfiles and the compose
+  # file's pinned images (postgres:16-alpine, caddy:2-alpine, nginx:1.27-alpine).
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /backend
+      - /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(docker)"
+    labels:
+      - dependencies
+      - docker
+    groups:
+      docker-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # --- The CI workflow's own actions ----------------------------------------
+  - package-ecosystem: github-actions
+    # Must be "/" - Dependabot always looks in .github/workflows from the root.
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(actions)"
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
