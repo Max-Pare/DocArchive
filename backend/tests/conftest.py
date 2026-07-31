@@ -14,12 +14,15 @@ silent skip, so `pytest` exited 0 with every API test skipped and nobody noticed
 that they had never once executed.
 """
 import os
+import pathlib
 import tempfile
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
+
+BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
 
 # --------------------------------------------------------------------------
 # Environment isolation. This block MUST run before anything imports `app.*`.
@@ -103,8 +106,50 @@ def _reset_rate_limiter():
     limiter.enabled = True
 
 
+def _run_alembic_upgrade(url: str) -> None:
+    """Build the schema the way production does: by running the migrations."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    # Absolute, so this works regardless of the cwd pytest was invoked from.
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "head")
+
+
+@pytest.fixture(scope="session")
+def migrated_engine(db_url):
+    """Session-scoped engine whose schema was built by `alembic upgrade head`.
+
+    Previously each test did drop_all()/create_all() and then re-created the
+    full-text index from a SQL string hand-copied out of 0001. That had two costs:
+    the migrations were never executed by any test, so the models and the migration
+    silently drifted apart (they had, in five places), and the FTS DDL existed in two
+    places that could disagree.
+    """
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        # Cheaper and more thorough than drop_all: also removes anything a previous
+        # run's migrations created that Base.metadata does not know about.
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    _run_alembic_upgrade(db_url)
+    yield engine
+    engine.dispose()
+
+
 @pytest.fixture()
-def client(db_url, monkeypatch):
+def client(migrated_engine, monkeypatch):
+    """A TestClient whose writes are all rolled back at the end of the test.
+
+    Every test runs inside one outer transaction on a single connection. Sessions are
+    bound to that connection with join_transaction_mode="create_savepoint", so code
+    that opens its OWN session -- seed() and run_ocr_for_document() both do -- joins
+    this transaction instead of committing independently. Their .commit() calls
+    release a savepoint rather than writing for real, so a single rollback at the end
+    undoes everything and the next test starts from the migrated, empty schema.
+    """
     from fastapi.testclient import TestClient
 
     # settings is a module-level singleton built at import time, so clearing the
@@ -116,23 +161,25 @@ def client(db_url, monkeypatch):
 
     config_module.settings = get_settings()
 
-    # `import app.models` is load-bearing: Base.metadata is populated as a side
-    # effect of importing the model modules, and create_all() below silently
-    # creates NOTHING if they have not been imported yet. Until now this worked
-    # only by accident - tests/test_api.py has an autouse fixture that patches
-    # app.ocr.service, which happens to import app.models first. A DB test module
-    # that does not drag app.models in got an empty schema, and the CREATE INDEX
-    # below then failed with 'relation "documents" does not exist'.
     import app.db as db_module
-    import app.models
-    from app.db import Base
 
-    engine = create_engine(db_url)
-    monkeypatch.setattr(db_module, "engine", engine)
-    monkeypatch.setattr(
-        db_module,
-        "SessionLocal",
-        sessionmaker(bind=engine, autoflush=False, autocommit=False),
+    connection = migrated_engine.connect()
+    outer = connection.begin()
+
+    monkeypatch.setattr(db_module, "engine", migrated_engine)
+
+    # Reconfigure the EXISTING sessionmaker in place rather than rebinding the name.
+    # app/seed.py and app/ocr/service.py both do `from app.db import SessionLocal`,
+    # which copies the reference at import time, so monkeypatching
+    # app.db.SessionLocal leaves those two modules pointing at the original. That is
+    # not theoretical: it made the first DB test pass (app.seed was imported after
+    # the patch, so it captured the right object) and every subsequent one fail with
+    # ResourceClosedError, because the cached module still held the previous test's
+    # closed connection. configure() mutates the shared object, so all holders agree.
+    original_bind = db_module.engine
+    db_module.SessionLocal.configure(
+        bind=connection,
+        join_transaction_mode="create_savepoint",
     )
 
     # storage caches its Fernet in a module global; drop it so this session's key
@@ -140,19 +187,6 @@ def client(db_url, monkeypatch):
     import app.storage as storage_module
 
     monkeypatch.setattr(storage_module, "_fernet", None)
-
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    # The FTS index is raw SQL in the migration and therefore absent from
-    # Base.metadata. Wave 2 replaces create_all() with `alembic upgrade head`,
-    # which removes this duplication.
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_documents_fts ON documents USING GIN "
-                "(to_tsvector('italian', coalesce(ocr_text, '') || ' ' || original_filename))"
-            )
-        )
 
     from app.main import app
     from app.seed import seed
@@ -162,8 +196,13 @@ def client(db_url, monkeypatch):
     with TestClient(app) as c:
         yield c
 
-    Base.metadata.drop_all(engine)
-    engine.dispose()
+    outer.rollback()
+    connection.close()
+    # monkeypatch cannot undo configure(), so restore the shared sessionmaker by hand.
+    db_module.SessionLocal.configure(
+        bind=original_bind,
+        join_transaction_mode="conditional_savepoint",
+    )
 
 
 # Backwards-compatible marker used by tests/test_api.py. Requesting `client`
