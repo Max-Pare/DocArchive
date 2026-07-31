@@ -1,5 +1,7 @@
 # --- build stage ---
-FROM node:20-alpine AS build
+# Node 24 LTS. Node 20 is past EOL (April 2026), and jsdom (a test dependency
+# resolved by `npm ci`) requires ^22.22.2 || ^24.15.0 || >=26.0.0.
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci

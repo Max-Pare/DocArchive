@@ -20,6 +20,11 @@ node_modules/
 dist/
 .vite/
 
+# Test / coverage output
+coverage/
+.coverage
+htmlcov/
+
 # Data / uploads
 data/
 *.enc
