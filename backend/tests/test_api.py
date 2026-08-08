@@ -51,6 +51,27 @@ def test_login_bad_password(client):
     assert r.status_code == 401
 
 
+@pytest.mark.slow
+@requires_db
+def test_login_is_rate_limited(client):
+    """The one test that opts out of the autouse limiter kill-switch.
+
+    Without this the 10/minute limit on /auth/login has no coverage at all, and the
+    --proxy-headers flag in entrypoint.sh (which is what makes the limit per-IP
+    rather than one global bucket behind Caddy) would be protecting nothing.
+    """
+    from app.rate_limit import limiter
+
+    limiter.reset()
+    limiter.enabled = True
+
+    wrong = {"username": ADMIN_EMAIL, "password": "wrong"}
+    codes = [client.post("/auth/login", data=wrong).status_code for _ in range(11)]
+
+    assert codes[:10] == [401] * 10, codes
+    assert codes[10] == 429, codes
+
+
 @requires_db
 def test_admin_creates_user_and_owner_isolation(client):
     admin_tok = _token(client, ADMIN)

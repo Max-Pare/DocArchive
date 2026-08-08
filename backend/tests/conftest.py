@@ -20,6 +20,7 @@ import tempfile
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -72,6 +73,18 @@ def db_url() -> str:
                 pytrace=False,
             )
         pytest.skip("TEST_DATABASE_URL not configured; set it to run DB tests")
+
+    # The schema fixture below runs `DROP SCHEMA public CASCADE` on whatever this
+    # points at. Pointing it at a dev database (a one-character edit away from the
+    # test one) would destroy it silently, so require the name to say _test.
+    database = make_url(TEST_DB_URL).database or ""
+    if not database.endswith("_test"):
+        pytest.fail(
+            f"TEST_DATABASE_URL points at database {database!r}, which does not end "
+            "in '_test'. These tests DROP the public schema; refusing to run against "
+            "a database that may not be disposable.",
+            pytrace=False,
+        )
 
     engine = create_engine(TEST_DB_URL)
     try:
@@ -166,6 +179,10 @@ def client(migrated_engine, monkeypatch):
     connection = migrated_engine.connect()
     outer = connection.begin()
 
+    # Read before the monkeypatch below replaces it, so teardown restores the app's
+    # own engine rather than this session's test engine.
+    original_bind = db_module.engine
+
     monkeypatch.setattr(db_module, "engine", migrated_engine)
 
     # Reconfigure the EXISTING sessionmaker in place rather than rebinding the name.
@@ -176,7 +193,6 @@ def client(migrated_engine, monkeypatch):
     # the patch, so it captured the right object) and every subsequent one fail with
     # ResourceClosedError, because the cached module still held the previous test's
     # closed connection. configure() mutates the shared object, so all holders agree.
-    original_bind = db_module.engine
     db_module.SessionLocal.configure(
         bind=connection,
         join_transaction_mode="create_savepoint",

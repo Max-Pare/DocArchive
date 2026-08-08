@@ -20,8 +20,6 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q --strict-markers --strict-config"
 markers = [
-    "db: needs a reachable Postgres (TEST_DATABASE_URL)",
-    "ocr: needs real tesseract + poppler on PATH",
     "slow: deliberately slow (e.g. exhausts a rate limit)",
 ]
 timeout = 120
