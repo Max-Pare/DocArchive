@@ -44,6 +44,31 @@ updates:
       - dependencies
       - frontend
     groups:
+      # A dependency lands in the FIRST group it matches, so these two must stay
+      # above the catch-all below.
+      #
+      # React and its types have to move as one unit. Ungrouped, Dependabot opens
+      # react + @types/react in one PR and react-dom + @types/react-dom in
+      # another; each one alone fails `npm ci` with an ERESOLVE peer conflict
+      # (@types/react-dom@18 requires @types/react@^18), so neither can ever go
+      # green no matter how often it is rebased. No update-types filter here on
+      # purpose: the constraint binds hardest on majors.
+      react:
+        applies-to: version-updates
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      # Same shape of problem: @vitejs/plugin-react declares a vite peer range, so
+      # a solo vite major is unmergeable by construction.
+      vite:
+        applies-to: version-updates
+        patterns:
+          - "vite"
+          - "@vitejs/plugin-react"
+          - "vitest"
+          - "@vitest/*"
       frontend-minor-and-patch:
         applies-to: version-updates
         patterns:
@@ -71,6 +96,19 @@ updates:
     labels:
       - dependencies
       - docker
+    ignore:
+      # The Python runtime is a coordinated change, not a dependency bump. The
+      # backend-tests job pins 3.12 to match this image, and psycopg2-binary
+      # ships no cp314 wheel - so an automatic 3.14 bump does not merely drift
+      # from what CI tests, it fails the image build outright while pip tries to
+      # compile psycopg2 from source. Bump it by hand, together with CI.
+      #
+      # Node is deliberately NOT ignored: the frontend job reads its version out
+      # of frontend/Dockerfile, so a node bump cannot drift from what CI runs.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
     groups:
       docker-minor-and-patch:
         applies-to: version-updates
