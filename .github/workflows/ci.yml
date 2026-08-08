@@ -1,8 +1,8 @@
 name: CI
 
 # Deliberately NO version matrix. This repo ships exactly one runtime: Python
-# 3.12 (backend/Dockerfile: python:3.12-slim) and Node 20 (frontend/Dockerfile:
-# node:20-alpine). Testing anything else would be testing software we do not run.
+# 3.12 (backend/Dockerfile: python:3.12-slim) and Node 24 (frontend/Dockerfile:
+# node:24-alpine). Testing anything else would be testing software we do not run.
 
 on:
   push:

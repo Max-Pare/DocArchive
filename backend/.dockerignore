@@ -14,7 +14,6 @@ venv/
 
 # --- tests & tooling (not installed in the runtime image) ---
 tests/
-pytest.ini
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

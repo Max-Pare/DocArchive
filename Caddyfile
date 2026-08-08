@@ -10,7 +10,9 @@
 		reverse_proxy frontend:80
 	}
 
-	# allow larger uploads (matches backend MAX_UPLOAD_BYTES)
+	# Deliberately above the backend's MAX_UPLOAD_BYTES (25 MiB): the backend should
+	# be the one rejecting an oversized upload with a 413 the SPA can explain, not
+	# Caddy cutting the body off first.
 	request_body {
 		max_size 30MB
 	}

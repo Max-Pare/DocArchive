@@ -57,8 +57,10 @@ services:
       retries: 3
     depends_on:
       backend:
-        # Not just service_started: the backend runs migrations and seeding before it
-        # serves, and the proxy would otherwise 502 through that whole window.
+        # nginx only serves static files, so this is not a hard requirement. It is
+        # ordering: the SPA's first render immediately calls /api, and the backend
+        # runs migrations and seeding before it serves. Coming up after the backend
+        # is healthy means a cold boot never shows a login screen that 502s.
         condition: service_healthy
 
   proxy:

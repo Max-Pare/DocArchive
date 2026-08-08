@@ -42,9 +42,11 @@ suggests date / visit type / tags — always editable, never auto-committed.
    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
    ```
 
-   Also set `DATABASE_URL` password to match `POSTGRES_PASSWORD`, and `CORS_ORIGINS`
-   to your public URL (e.g. `https://docarchive.example.com`). Change `ADMIN_EMAIL`
-   / `ADMIN_PASSWORD` — the first admin is created from these on first boot.
+   Leave `DATABASE_URL` commented out: under Compose it is built from
+   `POSTGRES_PASSWORD` in `./.env` and injected into the container, so a second copy
+   in `backend/.env` can only drift out of sync. Set `CORS_ORIGINS` to your public URL
+   (e.g. `https://docarchive.example.com`), and change `ADMIN_EMAIL` / `ADMIN_PASSWORD`
+   — the first admin is created from these on first boot.
 
 2. **Launch**
 
@@ -98,9 +100,15 @@ The DB-backed tests (auth, owner isolation, upload/download, full-text search) n
 Postgres test database — full-text search is Postgres-specific, so it cannot be faked:
 
 ```bash
+createdb docarchive_test        # or: psql -c 'CREATE DATABASE docarchive_test'
 export TEST_DATABASE_URL="postgresql+psycopg2://docarchive:<password>@localhost:5432/docarchive_test"
 pytest
 ```
+
+The database name **must end in `_test`** — the fixtures rebuild the schema with
+`DROP SCHEMA public CASCADE`, so pointing this at a dev database would wipe it. A name
+that does not match is a hard failure, not a warning. The migration tests additionally
+`CREATE DATABASE` / `DROP DATABASE`, so the role needs `CREATEDB`.
 
 `TEST_DATABASE_URL` has three deliberately distinct behaviours:
 
