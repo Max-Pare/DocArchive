@@ -152,16 +152,41 @@ def migrated_engine(db_url):
     engine.dispose()
 
 
+def _truncate_all(engine) -> None:
+    """Empty every mapped table, leaving the migrated schema itself alone.
+
+    alembic_version is deliberately not in Base.metadata, so it survives and the
+    session-scoped migration run is not repeated per test.
+    """
+    import app.models  # noqa: F401  - registers the mappers on Base.metadata
+    from app.db import Base
+
+    tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+    if not tables:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+
+
 @pytest.fixture()
 def client(migrated_engine, monkeypatch):
-    """A TestClient whose writes are all rolled back at the end of the test.
+    """A TestClient against the real engine, with the tables emptied beforehand.
 
-    Every test runs inside one outer transaction on a single connection. Sessions are
-    bound to that connection with join_transaction_mode="create_savepoint", so code
-    that opens its OWN session -- seed() and run_ocr_for_document() both do -- joins
-    this transaction instead of committing independently. Their .commit() calls
-    release a savepoint rather than writing for real, so a single rollback at the end
-    undoes everything and the next test starts from the migrated, empty schema.
+    An earlier version wrapped each test in one outer transaction and bound every
+    session to that single connection with join_transaction_mode="create_savepoint",
+    so a lone rollback undid the test. That was faster, but its correctness depended
+    on the savepoint NESTING order between sessions that know nothing about each
+    other: get_db() closes its session in a finally, and closing a savepoint-joined
+    session rolls that savepoint back - discarding whatever a separately-opened
+    session (run_ocr_for_document(), seed()) had already committed into it. It held
+    together by luck, and stopped holding under Starlette's newer request handling,
+    where it silently ate the OCR write and surfaced as an unrelated-looking
+    full-text-search failure.
+
+    Truncating instead is a little slower and completely boring: sessions commit for
+    real, exactly as they do in production, and no test can depend on another's
+    leftovers. Cleaning happens on the way IN, so a failed test leaves its rows on
+    the table for inspection.
     """
     from fastapi.testclient import TestClient
 
@@ -175,9 +200,6 @@ def client(migrated_engine, monkeypatch):
     config_module.settings = get_settings()
 
     import app.db as db_module
-
-    connection = migrated_engine.connect()
-    outer = connection.begin()
 
     # Read before the monkeypatch below replaces it, so teardown restores the app's
     # own engine rather than this session's test engine.
@@ -193,10 +215,9 @@ def client(migrated_engine, monkeypatch):
     # the patch, so it captured the right object) and every subsequent one fail with
     # ResourceClosedError, because the cached module still held the previous test's
     # closed connection. configure() mutates the shared object, so all holders agree.
-    db_module.SessionLocal.configure(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-    )
+    db_module.SessionLocal.configure(bind=migrated_engine)
+
+    _truncate_all(migrated_engine)
 
     # storage caches its Fernet in a module global; drop it so this session's key
     # is the one actually used.
@@ -212,13 +233,8 @@ def client(migrated_engine, monkeypatch):
     with TestClient(app) as c:
         yield c
 
-    outer.rollback()
-    connection.close()
     # monkeypatch cannot undo configure(), so restore the shared sessionmaker by hand.
-    db_module.SessionLocal.configure(
-        bind=original_bind,
-        join_transaction_mode="conditional_savepoint",
-    )
+    db_module.SessionLocal.configure(bind=original_bind)
 
 
 # Backwards-compatible marker used by tests/test_api.py. Requesting `client`
