@@ -159,19 +159,33 @@ jobs:
   # 3. Frontend typecheck + production build.
   # ---------------------------------------------------------------------------
   frontend:
-    name: frontend build (node 24)
+    name: frontend build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
+      # Read the version out of the Dockerfile rather than pinning it twice. A
+      # hardcoded "24" here silently drifts the moment a base-image bump lands,
+      # and then CI is testing a runtime the image does not ship. Note jsdom
+      # requires ^22.22.2 || ^24.15.0 || >=26.0.0, so an EOL Node fails the
+      # vitest step outright rather than degrading quietly.
+      - name: Resolve the Node version from frontend/Dockerfile
+        id: node
+        run: |
+          version="$(sed -n 's/^FROM node:\([0-9][0-9]*\)[-.].*/\1/p' frontend/Dockerfile | head -1)"
+          if [ -z "${version}" ]; then
+            echo "::error::could not parse a Node major from frontend/Dockerfile"
+            grep -n '^FROM' frontend/Dockerfile
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "building with Node ${version} (from frontend/Dockerfile)"
+
       - uses: actions/setup-node@v4
         with:
-          # Must match `FROM node:24-alpine` in frontend/Dockerfile. Node 20 is EOL,
-          # and jsdom requires ^22.22.2 || ^24.15.0 || >=26.0.0 - on Node 20 the
-          # vitest step below fails outright.
-          node-version: "24"
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
