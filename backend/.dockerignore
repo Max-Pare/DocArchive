@@ -1,0 +1,34 @@
+# --- secrets: never in an image layer ---
+.env
+.env.*
+!.env.example
+**/.env
+
+# --- python build artifacts ---
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- tests & tooling (not installed in the runtime image) ---
+tests/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- vcs / editors / docs ---
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+*.md
+.idea/
+.vscode/
+.DS_Store
+
+# --- local data ---
+data/
+*.enc
+*.sqlite3

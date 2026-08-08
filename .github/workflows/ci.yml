@@ -1,0 +1,594 @@
+name: CI
+
+# Deliberately NO version matrix. This repo ships exactly one runtime: Python
+# 3.12 (backend/Dockerfile: python:3.12-slim) and Node 24 (frontend/Dockerfile:
+# node:24-alpine). Testing anything else would be testing software we do not run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Backend unit/integration tests against a real Postgres 16.
+  # ---------------------------------------------------------------------------
+  backend-test:
+    name: backend tests (py3.12 + postgres 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: docarchive
+          POSTGRES_PASSWORD: docarchive
+          POSTGRES_DB: docarchive_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docarchive -d docarchive_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg2://docarchive:docarchive@localhost:5432/docarchive_test
+      # Without this, an unset or typo'd TEST_DATABASE_URL makes every DB-backed
+      # test skip and pytest still exits 0 - which is exactly how this suite
+      # managed to never run. In CI a missing or broken DB is a hard failure.
+      DOCARCHIVE_REQUIRE_DB: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OCR system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            tesseract-ocr-ita \
+            poppler-utils
+          tesseract --version
+          # The Italian model is not optional: OCR_LANGUAGES=ita, so a missing
+          # traineddata file turns every OCR into a silent ocr_failed.
+          tesseract --list-langs
+          tesseract --list-langs | grep -qx ita
+          command -v pdftoppm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # requirements-dev.txt starts with `-r requirements.txt`, so this is the
+          # runtime deps plus the test tooling. pip resolves the nested -r relative
+          # to the file it appears in, so running from the repo root is fine.
+          pip install -r backend/requirements-dev.txt
+
+      - name: Exactly one Alembic head
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          # `alembic heads` reads alembic/versions/ only - it never opens a DB
+          # connection - so this is cheap and needs no service wiring. Two heads
+          # means someone branched the migration chain, and `alembic upgrade head`
+          # then refuses to run on the VPS.
+          alembic heads
+          count="$(alembic heads | grep -c '(head)' || true)"
+          echo "alembic heads found: ${count}"
+          if [ "${count}" -ne 1 ]; then
+            echo "::error::expected exactly 1 Alembic head, found ${count}. Merge the branched revisions with 'alembic merge'."
+            exit 1
+          fi
+
+      - name: pytest
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          # -ra surfaces skip reasons: a suite that silently stops running is the
+          # failure mode this whole job exists to prevent.
+          # Coverage is REPORTED, never gated. A --cov-fail-under threshold on a
+          # young suite only teaches people to write assertion-free tests.
+          pytest -ra --cov=app --cov-report=term-missing
+
+  # ---------------------------------------------------------------------------
+  # 2. Backend lint. Advisory only, for now.
+  # ---------------------------------------------------------------------------
+  backend-lint:
+    name: backend lint (ruff, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # TODO: flip this to `continue-on-error: false` (or just delete the line) as
+    # soon as the one-time `ruff check --fix` + `ruff format` commit lands. The
+    # code has never been formatted, so today this job reports ~60 findings and
+    # ~12 files to reformat; blocking on that would only teach everyone to ignore
+    # a red build.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install ruff (same pin the test job uses)
+        run: |
+          set -euo pipefail
+          # Install ONLY ruff - the full requirements-dev.txt is minutes of wheels
+          # this job never touches - but read the version from requirements-dev.txt
+          # so there is a single pinned source of truth.
+          spec="$(grep -E '^ruff==' backend/requirements-dev.txt || true)"
+          if [ -z "${spec}" ]; then
+            echo "::error::no pinned 'ruff==' line in backend/requirements-dev.txt"
+            exit 1
+          fi
+          echo "installing ${spec}"
+          python -m pip install --upgrade pip
+          pip install "${spec}"
+          ruff --version
+
+      - name: ruff check
+        working-directory: backend
+        # Config lives in backend/pyproject.toml ([tool.ruff]).
+        run: ruff check --output-format=github .
+
+      - name: ruff format --check
+        working-directory: backend
+        run: ruff format --check --diff .
+
+  # ---------------------------------------------------------------------------
+  # 3. Frontend typecheck + production build.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend build (node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Must match `FROM node:24-alpine` in frontend/Dockerfile. Node 20 is EOL,
+          # and jsdom requires ^22.22.2 || ^24.15.0 || >=26.0.0 - on Node 20 the
+          # vitest step below fails outright.
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm ci
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        # `npm run build` is `tsc && vite build` and would catch this too, but
+        # running tsc first gives a clean "the types are broken" signal instead of
+        # a confusing bundler failure.
+        run: npx tsc --noEmit
+
+      - name: Lint (skipped if no lint script exists yet)
+        working-directory: frontend
+        # --if-present: the eslint/vitest wiring is landing in a parallel change,
+        # and the absence of a script must not fail this job.
+        run: npm run lint --if-present
+
+      - name: Unit tests (skipped if no test script exists yet)
+        working-directory: frontend
+        # Actions sets CI=true, so vitest runs once instead of entering watch mode.
+        # The step timeout is belt-and-braces in case a watch-mode script lands.
+        timeout-minutes: 10
+        run: npm run test --if-present
+
+      - name: Production build
+        working-directory: frontend
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # 4. Smoke: build and boot the ACTUAL shipped stack, then use it over HTTP.
+  #
+  #    This job exists because of a real outage. backend/entrypoint.sh was
+  #    committed mode 644 and the Dockerfile never chmod-ed it, so
+  #    CMD ["./entrypoint.sh"] died with exit 126 on every single boot and the
+  #    application had literally never run. No unit test can catch that. This job
+  #    can, and it is the reason this workflow exists - treat it as the
+  #    centrepiece, not as an optional extra.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: smoke (compose boot + HTTP + OCR round-trip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Throwaway credentials for a stack that is destroyed at the end of the job.
+      # Deliberately NOT repository secrets: keeping them in plain sight is what
+      # makes the /api/auth/me assertion below readable, and there is nothing here
+      # to protect.
+      # example.com, not example.test: UserOut.email is an EmailStr, and
+      # email-validator rejects the RFC 2606 special-use TLDs (.test, .local,
+      # .invalid, .localhost). Login still succeeds with one - the form field is a
+      # plain string - but GET /auth/me then 500s serialising the response.
+      SMOKE_ADMIN_EMAIL: smoke-admin@example.com
+      SMOKE_ADMIN_PASSWORD: smoke-admin-not-a-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Synthesize env files from the committed examples
+        run: |
+          set -euo pipefail
+
+          # Follow the README's Quick start LITERALLY. If .env.example or
+          # backend/.env.example ever stops being sufficient to boot the stack,
+          # this job goes red - documentation drift becomes a build failure
+          # instead of a support conversation.
+          cp .env.example .env
+          cp backend/.env.example backend/.env
+
+          # docker-compose.yml injects DATABASE_URL from POSTGRES_PASSWORD, so a
+          # second copy of the password in backend/.env.example is precisely the
+          # bug that silently broke this deploy. Pin the intent here.
+          if grep -qE '^[[:space:]]*DATABASE_URL=' backend/.env.example; then
+            echo "::error file=backend/.env.example::DATABASE_URL must stay commented out - docker-compose.yml injects it from POSTGRES_PASSWORD. Two copies of the password is how this deploy broke."
+            exit 1
+          fi
+
+          # stdlib only: neither `cryptography` nor `openssl` is guaranteed on the
+          # runner. A Fernet key is just urlsafe-base64 of 32 random bytes.
+          POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+          JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          FILE_ENCRYPTION_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+
+          # ./.env - both keys already exist in the example, so rewrite them in
+          # place rather than appending a second definition.
+          sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" .env
+          sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=:80|" .env
+
+          # A sed that matched nothing is silent, so assert the result. Otherwise
+          # compose fails much later with a far vaguer message.
+          grep -qE '^POSTGRES_PASSWORD=.{16,}$' .env
+          grep -qxF 'SITE_ADDRESS=:80' .env
+
+          # ./backend/.env - append. Compose's env_file parser is last-key-wins,
+          # so these override the placeholders from the example (verified against
+          # `docker compose config`). A step after `up` asserts that this really
+          # happened rather than trusting it.
+          {
+            echo ""
+            echo "# --- injected by CI (.github/workflows/ci.yml) ---"
+            echo "JWT_SECRET=${JWT_SECRET}"
+            echo "FILE_ENCRYPTION_KEY=${FILE_ENCRYPTION_KEY}"
+            echo "ADMIN_EMAIL=${SMOKE_ADMIN_EMAIL}"
+            echo "ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD}"
+          } >> backend/.env
+
+          # Show the shape of the config without printing any value.
+          echo "--- ./.env keys ---"
+          grep -oE '^[A-Z_]+=' .env
+          echo "--- backend/.env keys ---"
+          grep -oE '^[A-Z_]+=' backend/.env
+
+      - name: docker compose build
+        run: |
+          set -euo pipefail
+          docker compose build
+
+      - name: docker compose up --wait
+        run: |
+          set -euo pipefail
+          # THE step. It fails on:
+          #   * entrypoint.sh not executable      -> the container dies with 126
+          #   * a failed `alembic upgrade head`   -> backend exits non-zero
+          #   * a missing or bad env value        -> compose refuses to start
+          #   * a broken Caddyfile or nginx.conf  -> proxy / frontend exit
+          docker compose up -d --wait --wait-timeout 300
+
+      - name: Assert every service is running, not crash-looping
+        run: |
+          set -euo pipefail
+          # `restart: unless-stopped` means a container that dies with 126 comes
+          # straight back, so it can flicker through "running" and slip past
+          # `--wait`. A non-zero RestartCount is the tell. This is the direct
+          # regression guard for the outage that motivated this workflow.
+          fail=0
+          for svc in $(docker compose ps --services); do
+            cid="$(docker compose ps -q "${svc}" || true)"
+            if [ -z "${cid}" ]; then
+              echo "::error::service ${svc} has no container"
+              fail=1
+              continue
+            fi
+            state="$(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.ExitCode}}' "${cid}")"
+            status="$(echo "${state}" | cut -d' ' -f1)"
+            restarts="$(echo "${state}" | cut -d' ' -f2)"
+            exitcode="$(echo "${state}" | cut -d' ' -f3)"
+            echo "${svc}: status=${status} restarts=${restarts} exit=${exitcode}"
+            if [ "${status}" != "running" ] || [ "${restarts}" -ne 0 ]; then
+              echo "::error::${svc} is not cleanly running (status=${status} restarts=${restarts} exit=${exitcode})"
+              fail=1
+            fi
+          done
+          [ "${fail}" -eq 0 ]
+
+      - name: Assert the injected env actually reached the backend container
+        run: |
+          set -euo pipefail
+          # Proves the append-to-backend/.env above took effect. If it silently did
+          # not, the app still boots with FILE_ENCRYPTION_KEY="" and only explodes
+          # on the first upload - a far more confusing failure to debug.
+          jwt="$(docker compose exec -T backend printenv JWT_SECRET)"
+          key="$(docker compose exec -T backend printenv FILE_ENCRYPTION_KEY)"
+          storage="$(docker compose exec -T backend printenv STORAGE_DIR)"
+          test -n "${jwt}"
+          [ "${jwt}" != "change-me" ]
+          test -n "${key}"
+          if [ "${storage}" != "/data/files" ]; then
+            echo "::error::STORAGE_DIR is '${storage}', expected /data/files (the file_data volume mount)"
+            exit 1
+          fi
+          echo "env plumbing ok (values withheld); STORAGE_DIR=${storage}"
+
+      - name: HTTP smoke through Caddy (health, SPA, login, /auth/me)
+        run: |
+          set -euo pipefail
+          # Only `proxy` publishes ports (80/443). Talking to the backend or the
+          # frontend container directly would exercise a path no user can reach,
+          # so everything below goes through Caddy on :80 (SITE_ADDRESS=:80, no
+          # TLS, so no certificate dance on the runner).
+
+          for i in $(seq 1 60); do
+            if curl -fsS -m 5 http://localhost/api/health >/dev/null 2>&1; then
+              echo "api reachable after ${i} attempt(s)"
+              break
+            fi
+            echo "waiting for http://localhost/api/health (${i}/60)"
+            sleep 2
+          done
+
+          # Caddy's `handle_path /api/*` strips the prefix, so this is the
+          # backend's GET /health.
+          health="$(curl -fsS -m 10 http://localhost/api/health)"
+          echo "health: ${health}"
+          python3 -c 'import json, sys; d = json.loads(sys.argv[1]); assert d["status"] == "ok", d' "${health}"
+
+          # Everything outside /api is the nginx-served Vite bundle.
+          curl -fsS -m 10 http://localhost/ -o /tmp/index.html
+          grep -q 'id="root"' /tmp/index.html
+          echo "SPA served, React mount point present"
+
+          # POST /auth/login takes an OAuth2PasswordRequestForm: form-encoded
+          # `username` (treated as the email) plus `password`.
+          curl -fsS -m 15 -X POST http://localhost/api/auth/login \
+            --data-urlencode "username=${SMOKE_ADMIN_EMAIL}" \
+            --data-urlencode "password=${SMOKE_ADMIN_PASSWORD}" \
+            -o /tmp/token.json
+          token="$(python3 -c 'import json; print(json.load(open("/tmp/token.json"))["access_token"])')"
+          test -n "${token}"
+          echo "login returned a token (${#token} chars)"
+
+          # This also proves app/seed.py ran inside entrypoint.sh AND that it read
+          # the ADMIN_EMAIL we injected.
+          curl -fsS -m 15 http://localhost/api/auth/me \
+            -H "Authorization: Bearer ${token}" -o /tmp/me.json
+          python3 - "${SMOKE_ADMIN_EMAIL}" <<'PY'
+          import json, sys
+
+          me = json.load(open("/tmp/me.json"))
+          assert me["email"] == sys.argv[1], f"expected {sys.argv[1]!r}, got {me!r}"
+          assert me["is_admin"] is True, f"the seeded admin is not an admin: {me!r}"
+          print("/auth/me ok:", me["email"], "is_admin =", me["is_admin"])
+          PY
+
+          # Hand the token to the next step.
+          echo "SMOKE_TOKEN=${token}" >> "${GITHUB_ENV}"
+
+      - name: Upload -> real tesseract-ita OCR -> full-text search round-trip
+        run: |
+          set -euo pipefail
+
+          # Render the sample page INSIDE the backend image on purpose: that also
+          # proves the image's own Pillow, fonts and tesseract-ita are present,
+          # rather than the runner's apt packages.
+          docker compose exec -T backend python3 - <<'PY'
+          from PIL import Image, ImageDraw, ImageFont
+
+          LINES = [
+              "Laboratorio Analisi Cliniche",
+              "Referto di esami ematochimici",
+              "",
+              "Paziente: Mario Rossi",
+              "Data prelievo: 14/03/2024",
+              "",
+              "EMOCROMO COMPLETO",
+              "Globuli rossi        4.85   milioni/uL",
+              "Emoglobina          14.2    g/dL",
+              "Ematocrito          43.1    %",
+              "Globuli bianchi      6.30   migliaia/uL",
+              "PIASTRINE            245    migliaia/uL",
+              "",
+              "Colesterolo totale   192    mg/dL",
+              "Glicemia              89    mg/dL",
+          ]
+
+          # DejaVu ships with the image (the tesseract packages pull it in).
+          # Pillow's scalable built-in font is the fallback so a slimmer base image
+          # cannot break this step - the *bitmap* default font is far too small to
+          # OCR reliably, which is why load_default(size=...) is used.
+          try:
+              font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 34)
+          except OSError:
+              font = ImageFont.load_default(size=34)
+
+          img = Image.new("RGB", (1240, 60 + 46 * len(LINES)), "white")
+          draw = ImageDraw.Draw(img)
+          for i, line in enumerate(LINES):
+              draw.text((50, 30 + 46 * i), line, fill="black", font=font)
+          img.save("/tmp/ocr-sample.png")
+          print("rendered /tmp/ocr-sample.png", img.size)
+          PY
+
+          # Copy it out so the upload travels through Caddy, like a browser's.
+          #
+          # NOTE the filename. The FTS expression is
+          #   to_tsvector('italian', coalesce(ocr_text,'') || ' ' || original_filename)
+          # so a filename containing "piastrine" would satisfy the search
+          # assertion below even with OCR completely broken. Keep it wordless.
+          rm -f scan-001.png
+          docker compose cp backend:/tmp/ocr-sample.png ./scan-001.png
+          ls -l scan-001.png
+
+          doc_id="$(curl -fsS -m 120 -X POST http://localhost/api/documents \
+            -H "Authorization: Bearer ${SMOKE_TOKEN}" \
+            -F "file=@scan-001.png;type=image/png" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+          echo "uploaded document id=${doc_id}"
+
+          # OCR runs as a FastAPI BackgroundTask, so the upload response is
+          # status=uploaded and the work happens after it. Poll, capped at 120s.
+          status=""
+          for i in $(seq 1 60); do
+            status="$(curl -fsS -m 15 "http://localhost/api/documents/${doc_id}" \
+              -H "Authorization: Bearer ${SMOKE_TOKEN}" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["status"])')"
+            echo "  poll ${i}/60: status=${status}"
+            if [ "${status}" = "ocr_done" ]; then
+              break
+            fi
+            if [ "${status}" = "ocr_failed" ]; then
+              echo "::error::OCR failed inside the backend container - check tesseract / poppler in backend/Dockerfile"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "${status}" != "ocr_done" ]; then
+            echo "::error::document ${doc_id} never reached ocr_done (last status: ${status})"
+            exit 1
+          fi
+
+          # Print what tesseract actually read. Invaluable when this step breaks.
+          curl -fsS -m 60 -X POST "http://localhost/api/documents/${doc_id}/ocr" \
+            -H "Authorization: Bearer ${SMOKE_TOKEN}" -o /tmp/ocr.json
+          python3 -c 'import json; print("--- OCR excerpt ---"); print(json.load(open("/tmp/ocr.json"))["ocr_text_excerpt"])'
+
+          # Search for one distinctive word. OCR of a rendered image is never
+          # character-perfect and Postgres applies the italian stemmer, so a whole
+          # phrase would be flaky; "piastrine" -> "piastrin" is robust.
+          # Deliberately NOT asserted: the extracted doc_date and the guessed
+          # visit type. Both are heuristics and both are legitimately unreliable.
+          curl -fsS -m 15 -G "http://localhost/api/documents" \
+            --data-urlencode "q=piastrine" \
+            -H "Authorization: Bearer ${SMOKE_TOKEN}" -o /tmp/search.json
+          python3 - "${doc_id}" <<'PY'
+          import json, sys
+
+          want = int(sys.argv[1])
+          ids = [d["id"] for d in json.load(open("/tmp/search.json"))]
+          print("hits for q=piastrine:", ids)
+          assert want in ids, f"full-text search did not find document {want}; hits={ids}"
+          PY
+
+          # Negative control: without it, an endpoint that ignored `q` entirely
+          # would still satisfy the assertion above.
+          curl -fsS -m 15 -G "http://localhost/api/documents" \
+            --data-urlencode "q=zzqqxwvfrobnicate" \
+            -H "Authorization: Bearer ${SMOKE_TOKEN}" -o /tmp/search-none.json
+          python3 - <<'PY'
+          import json
+
+          hits = json.load(open("/tmp/search-none.json"))
+          assert hits == [], f"the q= filter is being ignored: a nonsense query returned {hits!r}"
+          print("negative control ok: nonsense query returns no hits")
+          PY
+
+      - name: Encrypted file landed on the mounted volume
+        run: |
+          set -euo pipefail
+          # STORAGE_DIR must resolve to the file_data volume mount. Python does
+          # NOT expand "~", so a value like ~/.docarch creates a literal "~"
+          # directory in the container's writable layer: uploads appear to work,
+          # and every document is destroyed by the next `docker compose build`.
+          # This assertion makes that class of bug unmergeable.
+          docker compose exec -T backend sh -c 'ls -l /data/files/*/*.enc'
+
+          # ...and prove /data/files really is the volume, not just a path that
+          # happens to exist inside the image.
+          mounts="$(docker inspect -f '{{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}' "$(docker compose ps -q backend)")"
+          echo "backend mounts: ${mounts}"
+          echo "${mounts}" | grep -q 'volume:/data/files'
+
+          # Cheap end-to-end proof of encryption at rest: a Fernet token is
+          # urlsafe-base64 of a 0x80 version byte first, so it always starts
+          # "gAAAA". Plaintext PNG bytes would not.
+          magic="$(docker compose exec -T backend sh -c 'f=$(ls /data/files/*/*.enc | head -1); head -c 5 "$f"')"
+          echo "first bytes on disk: ${magic}"
+          if [ "${magic}" != "gAAAA" ]; then
+            echo "::error::the stored file does not look Fernet-encrypted (got '${magic}', expected 'gAAAA')"
+            exit 1
+          fi
+
+      - name: The real Alembic migration ran
+        run: |
+          set -euo pipefail
+          # The pytest suite still builds its schema with Base.metadata.create_all(),
+          # so entrypoint.sh's `alembic upgrade head` is exercised HERE and nowhere
+          # else. POSTGRES_DB is `docarchive` for the compose stack (only the CI
+          # service container in backend-test uses docarchive_test).
+          version="$(docker compose exec -T db psql -U docarchive -d docarchive -tAc 'select version_num from alembic_version' | tr -d '[:space:]')"
+          head="$(docker compose exec -T backend alembic heads | grep '(head)' | awk '{print $1}')"
+          echo "alembic_version in the database: '${version}'"
+          echo "head in backend/alembic/versions: '${head}'"
+          test -n "${version}"
+          if [ "${version}" != "${head}" ]; then
+            echo "::error::the database is stamped at '${version}' but the repo head is '${head}'"
+            exit 1
+          fi
+
+          # The FTS GIN index is raw SQL inside the migration body and is absent
+          # from Base.metadata, so create_all() cannot produce it. Its presence
+          # proves the migration really executed, not merely that tables exist.
+          indexes="$(docker compose exec -T db psql -U docarchive -d docarchive -tAc "select indexname from pg_indexes where tablename='documents'")"
+          echo "${indexes}"
+          echo "${indexes}" | grep -qx ix_documents_fts
+
+      - name: Diagnostics (on failure)
+        if: failure()
+        # No `set -e` here on purpose: every command must run even if an earlier
+        # one fails, because this output is the only debugging material left once
+        # the runner is destroyed.
+        run: |
+          echo "=================== docker compose ps -a ==================="
+          docker compose ps -a || true
+          echo "=================== docker compose logs ===================="
+          docker compose logs --tail=300 --no-color || true
+          echo "=================== backend inspect ========================"
+          docker inspect "$(docker compose ps -q backend)" || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          set -euo pipefail
+          # `-v` destroys the named volumes: db_data (the entire database) and
+          # file_data (every encrypted document). That is correct and necessary on
+          # a throwaway CI runner, and it is NEVER acceptable on the VPS - there,
+          # use plain `docker compose down`. Do not copy this line into a deploy
+          # script or a runbook.
+          docker compose down -v --remove-orphans

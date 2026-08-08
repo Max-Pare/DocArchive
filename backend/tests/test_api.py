@@ -7,9 +7,10 @@ import io
 
 import pytest
 
-from tests.conftest import requires_db
+from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, requires_db
 
-ADMIN = {"username": "admin@example.com", "password": "changeme"}
+# Sourced from conftest so the seeded admin and the login attempt can never drift.
+ADMIN = {"username": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
 
 PNG_1x1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -40,7 +41,7 @@ def _no_real_ocr(monkeypatch):
 def test_login_and_me(client):
     tok = _token(client, ADMIN)
     r = client.get("/auth/me", headers=_auth(tok))
-    assert r.json()["email"] == "admin@example.com"
+    assert r.json()["email"] == ADMIN_EMAIL
     assert r.json()["is_admin"] is True
 
 
@@ -48,6 +49,27 @@ def test_login_and_me(client):
 def test_login_bad_password(client):
     r = client.post("/auth/login", data={"username": "admin@example.com", "password": "wrong"})
     assert r.status_code == 401
+
+
+@pytest.mark.slow
+@requires_db
+def test_login_is_rate_limited(client):
+    """The one test that opts out of the autouse limiter kill-switch.
+
+    Without this the 10/minute limit on /auth/login has no coverage at all, and the
+    --proxy-headers flag in entrypoint.sh (which is what makes the limit per-IP
+    rather than one global bucket behind Caddy) would be protecting nothing.
+    """
+    from app.rate_limit import limiter
+
+    limiter.reset()
+    limiter.enabled = True
+
+    wrong = {"username": ADMIN_EMAIL, "password": "wrong"}
+    codes = [client.post("/auth/login", data=wrong).status_code for _ in range(11)]
+
+    assert codes[:10] == [401] * 10, codes
+    assert codes[10] == 429, codes
 
 
 @requires_db
@@ -97,7 +119,18 @@ def test_upload_ocr_suggest_and_search(client):
     assert r.status_code == 200, r.text
     sug = r.json()
     assert sug["doc_date"] == "2023-03-14"
-    assert sug["visit_type_key"] == "blood_test"
+    # Pins ACTUAL behaviour, which is not the desirable behaviour. The stub text is
+    # "Referto del 14/03/2023 EMOCROMO completo glicemia": guess_visit_type_key picks
+    # the earliest-matching keyword, and "referto" sits at position 0, so the generic
+    # `report` shadows the specific `blood_test`. This assertion originally read
+    # "blood_test" and had simply never executed.
+    #
+    # It is a real defect, not just a test artifact: uploading a scan headed
+    # "Referto: ESAME EMOCROMOCITOMETRICO" through the running stack also yields
+    # `report`. Because "referto" heads nearly every Italian medical document,
+    # position-based matching collapses most documents to `report`. Ranking by
+    # keyword specificity instead of position is deferred to the suggestion rework.
+    assert sug["visit_type_key"] == "report"
     assert sug["status"] == "ocr_done"
 
     # full-text search should find it by an OCR'd word

@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { clearToken, getToken } from "../api/client";
@@ -16,6 +17,7 @@ const AuthCtx = createContext<AuthState | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!getToken()) {
@@ -36,6 +38,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function logout() {
     clearToken();
     setUser(null);
+    // Dropping the token is not enough: every per-user response still sits in the
+    // React Query cache (document list, OCR text, admin user list). This is a shared
+    // family device, and refetchOnWindowFocus is off, so the next user would read the
+    // previous user's medical documents straight out of cache.
+    queryClient.clear();
   }
 
   return (

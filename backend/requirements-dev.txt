@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# Test/lint tooling. Never installed into the runtime image (see .dockerignore).
+# httpx is NOT optional: fastapi.testclient.TestClient refuses to import without
+# it, which is why the DB-backed tests had never actually executed.
+pytest==9.1.1
+httpx==0.28.1
+pytest-cov==7.1.0
+pytest-timeout==2.4.0
+ruff==0.16.1
