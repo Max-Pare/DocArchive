@@ -223,7 +223,11 @@ jobs:
       # Deliberately NOT repository secrets: keeping them in plain sight is what
       # makes the /api/auth/me assertion below readable, and there is nothing here
       # to protect.
-      SMOKE_ADMIN_EMAIL: smoke-admin@example.test
+      # example.com, not example.test: UserOut.email is an EmailStr, and
+      # email-validator rejects the RFC 2606 special-use TLDs (.test, .local,
+      # .invalid, .localhost). Login still succeeds with one - the form field is a
+      # plain string - but GET /auth/me then 500s serialising the response.
+      SMOKE_ADMIN_EMAIL: smoke-admin@example.com
       SMOKE_ADMIN_PASSWORD: smoke-admin-not-a-secret
 
     steps:
