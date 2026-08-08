@@ -135,20 +135,13 @@ describe("login / logout", () => {
   });
 
   /**
-   * DEFECT (data leak across user switch, pinned): logout() only does
-   * clearToken() + setUser(null). It never touches the React Query cache, and
-   * AuthProvider has no access to the QueryClient created in main.tsx. So every
-   * cached per-user response - the document list, a document's OCR text, the
-   * admin user list - survives logout. On a shared family device, user B who
-   * logs in right after user A sees A's cached medical documents rendered from
-   * cache until each query refetches (and `refetchOnWindowFocus` is disabled in
-   * main.tsx, which widens the window further).
-   *
-   * Fix: call queryClient.clear() (or removeQueries) inside logout, e.g. via
-   * useQueryClient() in AuthProvider. This test pins the current leaky
-   * behaviour so the fix flips it.
+   * Regression guard for a data leak across user switch: dropping the token is not
+   * enough, because every per-user response (document list, OCR text, admin user
+   * list) stays in the React Query cache. On a shared family device the next user
+   * would render the previous user's medical documents from cache - and
+   * refetchOnWindowFocus is disabled in main.tsx, which widens that window.
    */
-  it("logout() does NOT clear the React Query cache, so per-user data leaks", async () => {
+  it("logout() clears the React Query cache so per-user data cannot leak", async () => {
     localStorage.setItem(TOKEN_KEY, "valid-token");
     getMeMock.mockResolvedValue(ALICE);
 
@@ -162,11 +155,8 @@ describe("login / logout", () => {
     await ui.click(screen.getByRole("button", { name: "log out" }));
     await waitFor(() => expect(userText()).toBe("anonymous"));
 
-    // still there after logout - this is the bug
-    expect(queryClient.getQueryData(["documents", {}])).toEqual([
-      { id: 42, title: "Esami del sangue" },
-    ]);
-    expect(queryClient.getQueryCache().getAll()).toHaveLength(1);
+    expect(queryClient.getQueryData(["documents", {}])).toBeUndefined();
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 });
 
