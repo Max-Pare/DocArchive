@@ -15,6 +15,7 @@ Two things about the module under test drive the fixture below:
     reset to None whenever the key changes — otherwise a stale cipher silently
     keeps using the previous key.
 """
+
 import base64
 import os
 import re

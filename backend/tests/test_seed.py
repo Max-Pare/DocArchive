@@ -10,6 +10,7 @@ migrations", the Docker entrypoint runs it on every container start, and a re-ha
 of the admin password on each boot would silently invalidate a password the user had
 changed in the meantime.
 """
+
 from contextlib import contextmanager
 
 from sqlalchemy import func, select

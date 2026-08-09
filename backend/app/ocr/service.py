@@ -1,4 +1,5 @@
 """Run OCR for a document id in its own DB session (safe for BackgroundTasks)."""
+
 import logging
 
 from app.db import SessionLocal

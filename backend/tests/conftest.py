@@ -13,6 +13,7 @@ The previous version collapsed "not configured" and "typo'd/down" into the same
 silent skip, so `pytest` exited 0 with every API test skipped and nobody noticed
 that they had never once executed.
 """
+
 import os
 import pathlib
 import tempfile

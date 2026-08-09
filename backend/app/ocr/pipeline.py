@@ -5,6 +5,7 @@ Strategy:
   - PDF without usable text          -> rasterize pages (pdf2image/poppler) -> tesseract.
   - Image                            -> tesseract directly (Pillow).
 """
+
 import io
 
 from app.config import settings

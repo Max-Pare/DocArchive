@@ -7,6 +7,7 @@ Why this file exists: the suite used to build its schema with
 Base.metadata.create_all(), so the migrations were never executed by any test and the
 models drifted away from them in five places without anything failing.
 """
+
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
@@ -90,9 +91,7 @@ def test_full_text_index_exists(scratch_engine):
 
     with scratch_engine.connect() as conn:
         indexes = (
-            conn.execute(
-                text("SELECT indexname FROM pg_indexes WHERE tablename = 'documents'")
-            )
+            conn.execute(text("SELECT indexname FROM pg_indexes WHERE tablename = 'documents'"))
             .scalars()
             .all()
         )
