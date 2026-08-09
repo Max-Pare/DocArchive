@@ -5,7 +5,9 @@ from pydantic import BaseModel, EmailStr, Field
 
 class Token(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    # False positive: "bearer" is the OAuth2 token TYPE, per RFC 6750, not a
+    # credential. The value is public and appears verbatim in every response.
+    token_type: str = "bearer"  # noqa: S105
 
 
 class UserOut(BaseModel):

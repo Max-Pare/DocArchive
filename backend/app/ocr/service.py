@@ -23,7 +23,7 @@ def run_ocr_for_document(document_id: int) -> None:
             text = extract_text(data, doc.mime_type)
             doc.ocr_text = text
             doc.status = "ocr_done"
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("OCR failed for document %s", document_id)
             doc.status = "ocr_failed"
         db.commit()

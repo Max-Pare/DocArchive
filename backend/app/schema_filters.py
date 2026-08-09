@@ -14,7 +14,5 @@ environment and the schema-parity test use these, which keeps them from drifting
 IGNORED_INDEXES = frozenset({"ix_documents_fts"})
 
 
-def include_object(object_, name, type_, reflected, compare_to):  # noqa: ARG001
-    if type_ == "index" and name in IGNORED_INDEXES:
-        return False
-    return True
+def include_object(object_, name, type_, reflected, compare_to):
+    return not (type_ == "index" and name in IGNORED_INDEXES)

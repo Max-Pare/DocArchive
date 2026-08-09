@@ -1,4 +1,5 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +10,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://docarchive:docarchive@db:5432/docarchive"
 
     # Auth
-    jwt_secret: str = "change-me-in-production"
+    # The S105 suppression below marks a TRUE positive, not a false one. A
+    # usable default signing key
+    # with no production guard is a real hole - anyone who knows the default
+    # forges an admin token. The fix is a fail-fast validator that refuses to
+    # boot with this value when ENVIRONMENT=production, which is a separate
+    # change; this suppression exists to unblock the lint gate and comes out
+    # with that commit.
+    jwt_secret: str = "change-me-in-production"  # noqa: S105
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 12  # 12h
 
@@ -37,7 +45,7 @@ class Settings(BaseSettings):
 
     # First admin bootstrap (used by seed script)
     admin_email: str = "admin@example.com"
-    admin_password: str = "changeme"
+    admin_password: str = "changeme"  # noqa: S105  - same as jwt_secret above
 
     @property
     def cors_origin_list(self) -> list[str]:

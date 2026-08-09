@@ -19,9 +19,8 @@ import tempfile
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import sessionmaker
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
 
@@ -121,8 +120,9 @@ def _reset_rate_limiter():
 
 def _run_alembic_upgrade(url: str) -> None:
     """Build the schema the way production does: by running the migrations."""
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     # Absolute, so this works regardless of the cwd pytest was invoked from.

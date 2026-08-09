@@ -1,8 +1,8 @@
-from datetime import datetime, date
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-from app.schemas.catalog import VisitTypeOut, TagOut
+from app.schemas.catalog import TagOut, VisitTypeOut
 
 
 class DocumentOut(BaseModel):

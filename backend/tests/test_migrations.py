@@ -8,7 +8,6 @@ Base.metadata.create_all(), so the migrations were never executed by any test an
 models drifted away from them in five places without anything failing.
 """
 import pytest
-from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -16,6 +15,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
+from alembic import command
 from tests.conftest import BACKEND_DIR
 
 MIGRATION_TEST_DB = "docarchive_migrations_test"
@@ -126,7 +126,9 @@ def test_redundant_unique_constraints_are_gone(scratch_engine):
         assert dropped not in names
         # ...but uniqueness must still be enforced, by the unique index.
         unique_indexes = [
-            ix for ix in inspector.get_indexes(table) if ix["unique"] and ix["column_names"] == [column]
+            ix
+            for ix in inspector.get_indexes(table)
+            if ix["unique"] and ix["column_names"] == [column]
         ]
         assert unique_indexes, f"{table}.{column} lost its uniqueness guarantee"
 

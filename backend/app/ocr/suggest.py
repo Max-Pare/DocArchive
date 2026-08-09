@@ -5,7 +5,7 @@ regex for dates and keyword matching for visit type + tags.
 """
 import re
 from datetime import date
-from functools import lru_cache
+from functools import cache
 
 # Italian visit-type keywords -> visit_type.key
 #
@@ -154,7 +154,7 @@ def guess_date(text: str) -> date | None:
     return pool[0][0]
 
 
-@lru_cache(maxsize=None)
+@cache
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
     """Word-aware matcher for one keyword.
 
