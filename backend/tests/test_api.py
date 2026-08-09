@@ -4,6 +4,7 @@ Skipped automatically unless TEST_DATABASE_URL points at a reachable Postgres.
 Image OCR is monkeypatched so tesseract is not required to run these.
 """
 import io
+from urllib.parse import quote
 
 import pytest
 
@@ -158,3 +159,41 @@ def test_download_roundtrip(client):
     r = client.get(f"/documents/{doc_id}/file", headers=_auth(admin_tok))
     assert r.status_code == 200
     assert r.content == PNG_1x1  # decrypted bytes match original upload
+
+
+@requires_db
+@pytest.mark.parametrize(
+    "uploaded_name",
+    [
+        'evil".png',  # would end the quoted-string early
+        "evil\r\nX-Injected: yes.png",  # would inject a header
+        "referto ecografia.png",  # ordinary name, must survive intact
+        "esame_martedì.png",  # non-ASCII, must survive via filename*
+    ],
+)
+def test_download_content_disposition_survives_a_hostile_filename(client, uploaded_name):
+    """End-to-end shape check. The hostile strings are exercised directly against
+    _content_disposition() in tests/test_download_headers.py, because the multipart
+    encoder percent-encodes the filename before the server ever sees it."""
+    admin_tok = _token(client, ADMIN)
+    r = client.post(
+        "/documents",
+        headers=_auth(admin_tok),
+        files={"file": (uploaded_name, io.BytesIO(PNG_1x1), "image/png")},
+    )
+    assert r.status_code == 201, r.text
+    doc_id = r.json()["id"]
+    stored_name = r.json()["original_filename"]
+
+    r = client.get(f"/documents/{doc_id}/file", headers=_auth(admin_tok))
+    assert r.status_code == 200
+    disposition = r.headers["content-disposition"]
+
+    # No control characters and no stray quote, so nothing can escape the parameter
+    # or start a header of its own.
+    assert "\r" not in disposition and "\n" not in disposition
+    assert disposition.count('"') == 2
+    assert "x-injected" not in {k.lower() for k in r.headers}
+
+    # The stored name still reaches the client, percent-encoded, per RFC 6266.
+    assert f"filename*=UTF-8''{quote(stored_name, safe='')}" in disposition

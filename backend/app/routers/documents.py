@@ -1,5 +1,6 @@
 import io
 from datetime import date
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
@@ -18,6 +19,25 @@ from app.schemas.document import DocumentOut, DocumentUpdate, OcrSuggestion
 from app.storage import delete_file, read_decrypted, save_encrypted
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+def _content_disposition(filename: str) -> str:
+    """Build a Content-Disposition value that an uploaded filename cannot break out of.
+
+    original_filename comes straight from the upload and is never sanitised on the way
+    in, so it can contain a double quote (which ends the quoted-string early and lets
+    the rest be read as parameters) or CR/LF (which injects whole headers). Both are
+    handled the way RFC 6266 intends: a conservative ASCII `filename` for old clients,
+    plus `filename*` carrying the real, possibly non-ASCII name percent-encoded.
+    """
+    # Anything outside printable ASCII - controls included - is dropped rather than
+    # replaced, so a name made only of them degrades to the fallback below.
+    ascii_name = "".join(c for c in filename if 0x20 <= ord(c) < 0x7F)
+    ascii_name = ascii_name.replace("\\", "_").replace('"', "_").strip()
+    if not ascii_name:
+        ascii_name = "document"
+    # quote() leaves no delimiter unescaped, so filename* needs no quoting of its own.
+    return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 def _get_owned(db: Session, doc_id: int, user: User) -> Document:
@@ -62,7 +82,14 @@ async def upload_document(
         status="uploaded",
     )
     db.add(doc)
-    db.commit()
+    try:
+        db.commit()
+    except BaseException:
+        # The bytes are already on disk. Without this the file outlives the failed
+        # insert as an orphan that nothing references and nothing reaps.
+        db.rollback()
+        delete_file(stored_path)
+        raise
     db.refresh(doc)
 
     # OCR always runs (text is indexed regardless of Auto-fill button).
@@ -149,9 +176,12 @@ def update_document(
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(doc_id: int, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
     doc = _get_owned(db, doc_id, current)
-    delete_file(doc.stored_path)
+    stored_path = doc.stored_path
+    # Row first, file second. The other order leaves a row whose download 500s if the
+    # commit fails; this one leaves an unreferenced file, which is merely wasted disk.
     db.delete(doc)
     db.commit()
+    delete_file(stored_path)
 
 
 @router.get("/{doc_id}/file")
@@ -161,7 +191,7 @@ def download_file(doc_id: int, current: User = Depends(get_current_user), db: Se
     return StreamingResponse(
         io.BytesIO(data),
         media_type=doc.mime_type,
-        headers={"Content-Disposition": f'inline; filename="{doc.original_filename}"'},
+        headers={"Content-Disposition": _content_disposition(doc.original_filename)},
     )
 
 
