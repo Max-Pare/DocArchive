@@ -59,13 +59,27 @@ fi
 # 2. login ----------------------------------------------------------------------
 # Credentials come from the restored backend/.env, so this also proves the env/
 # half of the backup landed.
-ADMIN_EMAIL="$(grep -E '^ADMIN_EMAIL=' "${REPO_ROOT}/backend/.env" | cut -d= -f2- | tr -d '"')"
-ADMIN_PASSWORD="$(grep -E '^ADMIN_PASSWORD=' "${REPO_ROOT}/backend/.env" | cut -d= -f2- | tr -d '"')"
+#
+# `tail -n1`, not the first match: compose's env_file parser is last-key-wins, so
+# a file that defines a key twice - which is exactly what CI produces, appending
+# real values under the placeholders from .env.example - is served by the LAST
+# one. Taking every match made this a two-line string and every login a 401.
+env_value() {
+    grep -E "^${1}=" "${REPO_ROOT}/backend/.env" | tail -n1 | cut -d= -f2- | tr -d '"'
+}
+ADMIN_EMAIL="$(env_value ADMIN_EMAIL)"
+ADMIN_PASSWORD="$(env_value ADMIN_PASSWORD)"
 
-TOKEN="$(curl -fsS -m 15 -X POST "${API_BASE}/api/auth/login" \
-    -d "username=${ADMIN_EMAIL}" -d "password=${ADMIN_PASSWORD}" \
-    | jq -r '.access_token // empty')"
-check "login as ${ADMIN_EMAIL}" "$([ -n "$TOKEN" ] && echo 1 || echo 0)"
+# Not `curl -f`: a failed login must be reported as a FAIL with the status code,
+# not kill the script with a bare "curl: (22)" that says nothing about which of
+# the two credentials was wrong.
+LOGIN_BODY="$(mktemp)"
+LOGIN_CODE="$(curl -sS -m 15 -o "$LOGIN_BODY" -w '%{http_code}' -X POST "${API_BASE}/api/auth/login" \
+    -d "username=${ADMIN_EMAIL}" -d "password=${ADMIN_PASSWORD}" || echo 000)"
+TOKEN="$(jq -r '.access_token // empty' < "$LOGIN_BODY" 2>/dev/null || true)"
+rm -f -- "$LOGIN_BODY"
+
+check "login as ${ADMIN_EMAIL} (HTTP ${LOGIN_CODE})" "$([ -n "$TOKEN" ] && echo 1 || echo 0)"
 [ -n "$TOKEN" ] || die "cannot continue without a token"
 
 # 3. documents actually decrypt --------------------------------------------------
