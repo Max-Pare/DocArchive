@@ -8,6 +8,10 @@ tags + full-text search**. Per-user private data, JWT auth, files encrypted at r
 - **Frontend:** React + TypeScript (Vite), React Query.
 - **Deploy:** Docker Compose (Postgres, backend, frontend, Caddy reverse proxy w/ auto-HTTPS).
 
+## SLOP WARNING
+
+This application was entirely vibe coded, deploy at your own risk.
+
 ## Architecture
 
 ```
