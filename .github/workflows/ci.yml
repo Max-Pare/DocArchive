@@ -406,7 +406,7 @@ jobs:
       # nothing. Bake was the obvious alternative and does not work here: reading
       # targets from a compose file yields no tags at all, so --load produces
       # images compose cannot see.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build backend image
         uses: docker/build-push-action@v6
@@ -741,7 +741,7 @@ jobs:
       - name: Synthesize env files from the committed examples
         run: .github/scripts/synthesize-env.sh
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build backend image
         uses: docker/build-push-action@v6
