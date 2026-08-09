@@ -20,6 +20,60 @@ def test_guess_date_none_when_absent():
     assert guess_date("nessuna data qui") is None
 
 
+# ---------------------------------------------------------------------------
+# guess_date on a real referto layout
+#
+# Reported from actual use: an exam was filed under the patient's date of birth.
+# Italian referti put the patient block - name, date of birth, codice fiscale -
+# above the exam itself, so "the first plausible date" is structurally the wrong
+# answer, not an unlucky one.
+# ---------------------------------------------------------------------------
+
+REFERTO = """\
+OSPEDALE SAN RAFFAELE - Laboratorio Analisi
+Paziente: ROSSI MARIO
+Nato il 12/05/1961 a Milano
+Codice Fiscale: RSSMRA61E12F205X
+
+REFERTO DI ESAME EMOCROMOCITOMETRICO
+Data prelievo: 14/03/2023
+Data refertazione: 15/03/2023
+
+Emoglobina 14.2 g/dL
+"""
+
+
+def test_guess_date_ignores_the_date_of_birth():
+    assert guess_date(REFERTO) == date(2023, 3, 14)
+
+
+def test_guess_date_ignores_the_date_of_birth_when_written_out():
+    text = "Paziente: Rossi Mario\nData di nascita: 3 giugno 1958\nEseguito il 7 aprile 2024\n"
+    assert guess_date(text) == date(2024, 4, 7)
+
+
+def test_guess_date_prefers_a_labelled_event_date_over_an_unlabelled_one():
+    text = "Stampato 20/03/2023\nData esame: 14/03/2023\n"
+    assert guess_date(text) == date(2023, 3, 14)
+
+
+def test_guess_date_falls_back_to_the_most_recent_past_date():
+    """No labels at all: the exam cannot predate the birth, so the later one wins."""
+    text = "Rossi Mario 12/05/1961\nEcografia addome completo\n14/03/2023\n"
+    assert guess_date(text) == date(2023, 3, 14)
+
+
+def test_guess_date_ignores_a_future_follow_up_appointment():
+    future = date.today().replace(year=date.today().year + 1)
+    text = f"Visita del 10/01/2024\nProssimo controllo: {future.strftime('%d/%m/%Y')}\n"
+    assert guess_date(text) == date(2024, 1, 10)
+
+
+def test_guess_date_still_works_when_the_only_date_is_a_birth_date():
+    """Better a birth date the user can correct than no suggestion at all."""
+    assert guess_date("Tessera sanitaria - nato il 12/05/1961") == date(1961, 5, 12)
+
+
 def test_guess_visit_type_blood_test():
     assert guess_visit_type_key("Esito EMOCROMO completo e glicemia") == "blood_test"
 

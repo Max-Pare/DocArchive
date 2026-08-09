@@ -34,6 +34,31 @@ _TEXT_DATE = re.compile(
     re.IGNORECASE,
 )
 
+# How far back to look for a label describing the date that follows it. Wide enough
+# for "data di esecuzione dell'esame:" and for a label sitting in the previous table
+# cell, narrow enough not to reach the previous field's value.
+_LABEL_WINDOW = 40
+
+# Labels that mean "this is the patient, not the event". A referto states the date of
+# birth in its header, above the exam date, which is exactly why taking the first
+# plausible date picked the wrong one.
+_BIRTH_LABELS = (
+    "data di nascita", "data nascita", "nato il", "nata il", "nato/a il", "nat. il",
+    "nascita", "d.n.", "dob",
+)
+
+# Labels that mean "this IS the event date". Listed because a referto often carries
+# several dates - accepted, collected, reported, printed - and these are the ones
+# worth preferring over a bare date with no label at all.
+_EVENT_LABELS = (
+    "data esame", "data dell'esame", "data di esecuzione", "data esecuzione",
+    "eseguito il", "eseguita il", "effettuato il", "effettuata il",
+    "data prelievo", "data del prelievo", "prelievo del", "prelevato il",
+    "data referto", "data del referto", "refertato il", "data accettazione",
+    "data di accettazione", "accettazione del", "data ricovero", "visita del",
+    "in data",
+)
+
 
 def _valid_date(y: int, m: int, d: int) -> date | None:
     if y < 100:
@@ -48,21 +73,69 @@ def _valid_date(y: int, m: int, d: int) -> date | None:
     return result
 
 
-def guess_date(text: str) -> date | None:
-    """First plausible date wins (documents usually lead with the event date)."""
+def _candidates(text: str) -> list[tuple[date, int]]:
+    """Every plausible date in the text, as (date, start offset), document order."""
+    found: list[tuple[date, int]] = []
     for m in _NUMERIC_DATE.finditer(text):
-        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        got = _valid_date(y, mo, d)
+        got = _valid_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
         if got:
-            return got
+            found.append((got, m.start()))
     for m in _TEXT_DATE.finditer(text):
-        d = int(m.group(1))
-        mo = _IT_MONTHS[m.group(2).lower()]
-        y = int(m.group(3))
-        got = _valid_date(y, mo, d)
+        got = _valid_date(int(m.group(3)), _IT_MONTHS[m.group(2).lower()], int(m.group(1)))
         if got:
-            return got
-    return None
+            found.append((got, m.start()))
+    found.sort(key=lambda pair: pair[1])
+    return found
+
+
+def _preceding_label(text: str, offset: int) -> str:
+    return text[max(0, offset - _LABEL_WINDOW):offset].lower()
+
+
+def guess_date(text: str) -> date | None:
+    """Best guess at the date of the EVENT the document describes.
+
+    This used to return the first plausible date, on the theory that documents lead
+    with their event date. Italian referti do not: they lead with the patient, so the
+    first date on the page is the date of birth. Reported from real use, where an exam
+    was filed under a 1961 date.
+
+    Three passes, cheapest signal last:
+
+      1. drop anything introduced by a birth label;
+      2. prefer a date introduced by an event label ("eseguito il", "data prelievo");
+      3. otherwise take the most recent date that is not in the future.
+
+    Step 3 leans on an invariant that cannot be violated: a patient cannot be examined
+    before being born, so the event date is always the later one. Excluding future
+    dates keeps a "prossimo controllo" appointment from beating it.
+    """
+    candidates = _candidates(text)
+    if not candidates:
+        return None
+
+    unlabelled_as_birth = [
+        (when, pos)
+        for when, pos in candidates
+        if not any(label in _preceding_label(text, pos) for label in _BIRTH_LABELS)
+    ]
+    # If every date looked like a birth date, trust the labels less than the text: fall
+    # back to the full set rather than returning nothing.
+    pool = unlabelled_as_birth or candidates
+
+    labelled = [
+        (when, pos)
+        for when, pos in pool
+        if any(label in _preceding_label(text, pos) for label in _EVENT_LABELS)
+    ]
+    if labelled:
+        return labelled[0][0]
+
+    today = date.today()
+    past = [when for when, _ in pool if when <= today]
+    if past:
+        return max(past)
+    return pool[0][0]
 
 
 def guess_visit_type_key(text: str) -> str | None:
