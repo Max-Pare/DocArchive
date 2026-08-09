@@ -16,7 +16,7 @@ Environment=COMPOSE_PROJECT_NAME=docarchive-verify
 Environment=COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml
 Environment=API_BASE=http://localhost:18080
 ExecStart=/bin/bash -c 'set -euo pipefail; \
-    latest=$(ls -1t "${BACKUP_DIR:-/var/backups/docarchive}"/20*.tar.age | head -1); \
+    latest=$(printf "%s\\n" "${BACKUP_DIR:-/var/backups/docarchive}"/20*.tar.age | sort | tail -1); \
     /opt/docarchive/ops/restore.sh --yes-destroy-current-data "$latest"; \
     /opt/docarchive/ops/verify-backup.sh'
 ExecStopPost=/bin/bash -c 'cd /opt/docarchive && COMPOSE_PROJECT_NAME=docarchive-verify COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml docker compose down -v || true'
