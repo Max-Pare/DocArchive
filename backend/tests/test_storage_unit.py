@@ -18,6 +18,7 @@ Two things about the module under test drive the fixture below:
 import base64
 import os
 import re
+import stat
 import uuid
 from pathlib import Path
 
@@ -256,56 +257,135 @@ def test_decrypting_tampered_ciphertext_raises_invalidtoken(storage, root):
 
 
 # ---------------------------------------------------------------------------
-# SECURITY FINDING (documented, deliberately NOT fixed here)
+# Containment: nothing may address a file outside STORAGE_DIR
 # ---------------------------------------------------------------------------
 #
-# read_decrypted() and delete_file() build their target as
-#     os.path.join(settings.storage_dir, stored_path)
-# with no containment check — no realpath() followed by an "is this still under
-# storage_dir?" assertion. Two consequences:
+# These pinned the OPPOSITE behaviour until _resolve() landed: read_decrypted()
+# and delete_file() used to join settings.storage_dir with stored_path and no
+# containment check at all, so ".." walked out of the root and an absolute path
+# discarded the root entirely.
 #
-#   1. a stored_path containing ".." escapes STORAGE_DIR entirely;
-#   2. an ABSOLUTE stored_path discards STORAGE_DIR completely, because
-#      os.path.join("/data/files", "/etc/hostname") == "/etc/hostname".
-#
-# NOT currently exploitable: stored_path is only ever server-generated
-# (save_encrypted writes "<owner_id>/<uuid4>.enc") and is never taken from
-# request input — the download route looks the row up by id and reads
-# doc.stored_path. So today this is defence-in-depth, not a live vulnerability.
-#
-# It goes live the moment anything writes an attacker-influenced value into
-# documents.stored_path: an import/restore tool, a migration from another
-# archive, an admin bulk load, or a future endpoint that accepts a path. Since
-# delete_file() would then delete arbitrary files and read_decrypted() would read
-# them, the hardening wave should add one _resolve(stored_path) helper that
-# rejects anything not under storage_dir, and route all three functions through it.
-#
-# The tests below assert the CURRENT (unsafe) behaviour, so they fail loudly once
-# that containment check lands — that failure is the signal to update them.
-# Everything they touch stays inside pytest's tmp_path; no real file is harmed.
+# stored_path is still only ever server-generated ("<owner_id>/<uuid4>.enc"), so
+# these guard the day that stops being true — an import/restore tool, a bulk
+# load, a migration from another archive. Each test also asserts the outside file
+# is left untouched, because raising after the damage is done would be no fix.
+# Everything stays inside pytest's tmp_path; no real file is at risk.
 
 
-def test_read_decrypted_traversal_escapes_storage_dir_pending_hardening(storage, tmp_path):
+def test_read_decrypted_rejects_traversal_out_of_storage_dir(storage, tmp_path):
     outside = tmp_path / "outside.enc"  # sibling of storage_dir, NOT under it
     outside.write_bytes(Fernet(TEST_FERNET_KEY.encode()).encrypt(b"data from outside"))
 
-    assert storage.read_decrypted("../outside.enc") == b"data from outside"
+    with pytest.raises(ValueError, match="escapes the storage root"):
+        storage.read_decrypted("../outside.enc")
+
+    assert outside.exists()  # not read, not touched
 
 
-def test_read_decrypted_absolute_path_ignores_storage_dir_pending_hardening(storage, tmp_path):
+def test_read_decrypted_rejects_an_absolute_path(storage, tmp_path):
     elsewhere = tmp_path / "elsewhere" / "leak.enc"
     elsewhere.parent.mkdir()
     elsewhere.write_bytes(Fernet(TEST_FERNET_KEY.encode()).encrypt(b"absolute path leak"))
 
+    # Still true, and the whole reason a bare join cannot be the containment check:
     # os.path.join drops its left operand entirely when the right one is absolute.
     assert os.path.join(storage.settings.storage_dir, str(elsewhere)) == str(elsewhere)
-    assert storage.read_decrypted(str(elsewhere)) == b"absolute path leak"
+
+    with pytest.raises(ValueError, match="escapes the storage root"):
+        storage.read_decrypted(str(elsewhere))
 
 
-def test_delete_file_traversal_deletes_outside_storage_dir_pending_hardening(storage, tmp_path):
+def test_delete_file_rejects_traversal_out_of_storage_dir(storage, tmp_path):
     outside = tmp_path / "victim.txt"
     outside.write_text("a file the archive has no business touching")
 
-    storage.delete_file("../victim.txt")
+    with pytest.raises(ValueError, match="escapes the storage root"):
+        storage.delete_file("../victim.txt")
 
-    assert not outside.exists()  # deleted: there is no containment check
+    assert outside.exists()  # the point: refused BEFORE the unlink
+
+
+def test_symlink_inside_storage_dir_cannot_point_out_of_it(storage, root, tmp_path):
+    """A lexical check would pass this; resolving the path is what catches it."""
+    outside = tmp_path / "secret.enc"
+    outside.write_bytes(Fernet(TEST_FERNET_KEY.encode()).encrypt(b"not yours"))
+    (root / "sneaky.enc").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="escapes the storage root"):
+        storage.read_decrypted("sneaky.enc")
+
+    assert outside.exists()
+
+
+# ---------------------------------------------------------------------------
+# On-disk permissions and write atomicity
+# ---------------------------------------------------------------------------
+
+
+def test_stored_files_and_dirs_are_not_world_readable(storage, root):
+    rel_path, _ = storage.save_encrypted(b"private", OWNER)
+
+    file_mode = stat.S_IMODE((root / rel_path).stat().st_mode)
+    dir_mode = stat.S_IMODE((root / str(OWNER)).stat().st_mode)
+
+    assert file_mode == 0o600, oct(file_mode)
+    assert dir_mode == 0o700, oct(dir_mode)
+
+
+def test_tighten_permissions_fixes_an_archive_written_before_the_modes_changed(storage, root):
+    """The deployment that most needs this is the one that already has documents."""
+    legacy_dir = root / "42"
+    legacy_dir.mkdir(mode=0o755)
+    legacy_file = legacy_dir / "deadbeef.enc"
+    legacy_file.write_bytes(b"written by an older build")
+    legacy_file.chmod(0o644)
+
+    changed = storage.tighten_permissions()
+
+    assert stat.S_IMODE(legacy_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(legacy_dir.stat().st_mode) == 0o700
+    assert changed >= 2
+
+    # Idempotent: a second pass has nothing left to do.
+    assert storage.tighten_permissions() == 0
+
+
+def test_tighten_permissions_does_not_follow_symlinks_out_of_the_archive(storage, root, tmp_path):
+    outside = tmp_path / "not-ours.txt"
+    outside.write_text("someone else's file")
+    outside.chmod(0o644)
+    (root / "link.enc").symlink_to(outside)
+
+    storage.tighten_permissions()
+
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644  # untouched
+
+
+def test_tighten_permissions_is_a_noop_when_storage_dir_does_not_exist(storage, monkeypatch, tmp_path):
+    monkeypatch.setattr(storage.settings, "storage_dir", str(tmp_path / "nope"))
+
+    assert storage.tighten_permissions() == 0
+
+
+def test_save_encrypted_leaves_no_temp_file_behind(storage, root):
+    storage.save_encrypted(b"private", OWNER)
+
+    leftovers = list((root / str(OWNER)).glob("*.tmp"))
+    assert leftovers == [], leftovers
+
+
+def test_save_encrypted_cleans_up_when_the_write_fails(storage, root, monkeypatch):
+    """A failed write must not leave a partial .tmp for a reaper that does not exist."""
+    real_fdopen = os.fdopen
+
+    def exploding_fdopen(fd, *args, **kwargs):
+        f = real_fdopen(fd, *args, **kwargs)
+        f.close()
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "fdopen", exploding_fdopen)
+
+    with pytest.raises(OSError, match="disk full"):
+        storage.save_encrypted(b"private", OWNER)
+
+    assert list((root / str(OWNER)).iterdir()) == []
