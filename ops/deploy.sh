@@ -62,7 +62,10 @@ curl -fsS -m 10 "${API_BASE:-http://localhost}/api/health" >/dev/null \
     || { warn "/api/health did not answer"; FAILURES=$((FAILURES + 1)); }
 
 DB_HEAD="$(psql_value 'select version_num from alembic_version' || true)"
-REPO_HEAD="$( ( cd backend && alembic heads 2>/dev/null ) | awk '{print $1}' | tr -d '[:space:]' || true)"
+# From the running container, not a host venv: that is the code that just ran the
+# migration, and it needs no Python on the host.
+REPO_HEAD="$(compose exec -T backend alembic heads 2>/dev/null \
+    | awk '/^[0-9a-f]+ ?/ {print $1; exit}' | tr -d '[:space:]' || true)"
 if [ -n "$REPO_HEAD" ] && [ "$DB_HEAD" != "$REPO_HEAD" ]; then
     warn "alembic_version is ${DB_HEAD} but the checkout is at ${REPO_HEAD} - migrations did not complete"
     FAILURES=$((FAILURES + 1))

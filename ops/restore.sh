@@ -72,7 +72,7 @@ fi
 # than restored as a file tree: a dump is portable across Postgres patch levels,
 # a raw data directory is not.
 docker volume rm -f "$(volume_name db_data)" >/dev/null 2>&1 || true
-docker volume create "$(volume_name db_data)" >/dev/null
+create_volume "$(volume_name db_data)"
 
 # 4. bring up the database alone ------------------------------------------------
 log "starting database"
@@ -94,9 +94,16 @@ RESTORED_ALEMBIC="$(psql_value 'select version_num from alembic_version')"
 [ "$RESTORED_ALEMBIC" = "$BACKUP_ALEMBIC" ] \
     || die "restored alembic_version '${RESTORED_ALEMBIC}' != manifest '${BACKUP_ALEMBIC}'"
 
-REPO_HEADS="$( ( cd "${REPO_ROOT}/backend" && alembic heads 2>/dev/null ) | awk '{print $1}' | tr -d '[:space:]' || true)"
+# Read the head from the backend IMAGE, not from a venv on the host. The image is
+# what actually runs `alembic upgrade head` on boot, so it is the more honest
+# answer - and it works on a bare recovery machine with no Python set up, which is
+# precisely where a restore happens. The first rehearsal of this script skipped
+# the check entirely because `alembic` was not on PATH, which made the one safety
+# check that matters here a no-op.
+REPO_HEADS="$(compose run --rm --no-deps -T backend alembic heads 2>/dev/null \
+    | awk '/^[0-9a-f]+ ?/ {print $1; exit}' | tr -d '[:space:]' || true)"
 if [ -z "$REPO_HEADS" ]; then
-    warn "could not read 'alembic heads' from the checkout; skipping the code-vs-data check"
+    warn "could not read 'alembic heads' from the backend image; skipping the code-vs-data check"
 elif [ "$REPO_HEADS" = "$RESTORED_ALEMBIC" ]; then
     log "schema matches the checked-out code (${RESTORED_ALEMBIC})"
 else

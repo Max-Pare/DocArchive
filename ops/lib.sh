@@ -74,12 +74,25 @@ volume_to_tar() {
         alpine:3 tar -C /src -czf "/dst/$(basename -- "$out")" .
 }
 
+# Create a volume the way compose would, so `docker compose up` afterwards does
+# not warn "already exists but was not created by Docker Compose" on every run.
+# Cosmetic, but noise in a disaster-recovery script trains you to skim its output,
+# and that is when the real warning gets missed.
+create_volume() {
+    local volume=$1 short=${1#"$(project_name)_"}
+    docker volume create \
+        --label com.docker.compose.project="$(project_name)" \
+        --label com.docker.compose.volume="$short" \
+        --label com.docker.compose.version="$(docker compose version --short)" \
+        "$volume" >/dev/null
+}
+
 # Restore a gzip into a named volume, replacing whatever is there.
 volume_from_tar() {
     local volume=$1 src=$2
     [ -f "$src" ] || die "archive '$src' not found"
     docker volume rm -f "$volume" >/dev/null 2>&1 || true
-    docker volume create "$volume" >/dev/null
+    create_volume "$volume"
     docker run --rm \
         -v "${volume}:/dst" \
         -v "$(dirname -- "$src"):/src:ro" \

@@ -72,17 +72,24 @@ docker compose exec -T db pg_isready -U docarchive
 ## 2. Restore from backup
 
 **Rehearse first if you possibly can.** This variant restores into a completely
-separate set of Docker volumes and cannot touch the real archive:
+separate set of Docker volumes, on a different port, and cannot touch the real
+archive — you can run it while the real stack is up:
 
 ```bash
-COMPOSE_PROJECT_NAME=docarchive-verify \
-  ops/restore.sh --yes-destroy-current-data /var/backups/docarchive/<stamp>.tar.age
+export COMPOSE_PROJECT_NAME=docarchive-verify
+export COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml
 
-COMPOSE_PROJECT_NAME=docarchive-verify API_BASE=http://localhost:8080 \
-  ops/verify-backup.sh
+ops/restore.sh --yes-destroy-current-data /var/backups/docarchive/<stamp>.tar.age
+API_BASE=http://localhost:18080 ops/verify-backup.sh
 
-COMPOSE_PROJECT_NAME=docarchive-verify docker compose down -v   # tear the rehearsal down
+docker compose down -v          # tear the rehearsal down
+unset COMPOSE_PROJECT_NAME COMPOSE_FILE
 ```
+
+**`COMPOSE_FILE` is not optional.** Without it the rehearsal uses the real compose
+file and fights the live stack for ports 80 and 443. The override also drops 443
+entirely — a rehearsal has no business requesting a certificate. Set
+`VERIFY_HTTP_PORT` if 18080 is taken.
 
 The real thing:
 

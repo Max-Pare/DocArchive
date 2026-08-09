@@ -11,12 +11,15 @@ WorkingDirectory=/opt/docarchive
 # documents in it still decrypt. COMPOSE_PROJECT_NAME is what keeps it away from
 # the real archive; do not remove it.
 Environment=COMPOSE_PROJECT_NAME=docarchive-verify
-Environment=API_BASE=http://localhost:8080
+# Without COMPOSE_FILE the rehearsal uses the real compose file and fights the
+# live stack for ports 80/443.
+Environment=COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml
+Environment=API_BASE=http://localhost:18080
 ExecStart=/bin/bash -c 'set -euo pipefail; \
     latest=$(ls -1t "${BACKUP_DIR:-/var/backups/docarchive}"/20*.tar.age | head -1); \
     /opt/docarchive/ops/restore.sh --yes-destroy-current-data "$latest"; \
     /opt/docarchive/ops/verify-backup.sh'
-ExecStopPost=/bin/bash -c 'cd /opt/docarchive && COMPOSE_PROJECT_NAME=docarchive-verify docker compose down -v || true'
+ExecStopPost=/bin/bash -c 'cd /opt/docarchive && COMPOSE_PROJECT_NAME=docarchive-verify COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml docker compose down -v || true'
 EnvironmentFile=-/etc/docarchive-backup.env
 Nice=15
 IOSchedulingClass=idle

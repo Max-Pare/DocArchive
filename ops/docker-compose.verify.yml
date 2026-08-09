@@ -10,8 +10,15 @@
 # to run alongside the real stack without fighting it for ports 80/443.
 #
 #   COMPOSE_PROJECT_NAME=docarchive-verify \
-#   docker compose -f docker-compose.yml -f ops/docker-compose.verify.yml up -d
+#   COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml \
+#   ops/restore.sh --yes-destroy-current-data <backup>
+#
+# `!override` replaces the port list rather than appending to it, so 443 is gone
+# too - a rehearsal has no business asking Caddy for a certificate.
+#
+# The port is configurable because 8080 is the single most contended port on any
+# development machine; the first rehearsal here died on exactly that.
 services:
   proxy:
     ports: !override
-      - "8080:80"
+      - "${VERIFY_HTTP_PORT:-18080}:80"
