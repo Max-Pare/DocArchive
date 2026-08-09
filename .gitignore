@@ -25,7 +25,9 @@ dist/
 # Test / coverage output
 coverage/
 .coverage
+coverage.xml
 htmlcov/
+lcov.info
 
 # Data / uploads
 data/

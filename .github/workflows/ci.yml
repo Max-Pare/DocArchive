@@ -19,10 +19,118 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # 0. A ~40-second gate in front of the slow jobs.
+  #
+  #    This is the ONLY place `needs:` is used. Everything downstream still runs
+  #    in parallel with everything else; what a gate buys is latency to first
+  #    red, and only when it is much faster than what it gates. A broken
+  #    Caddyfile used to cost 15 minutes to discover inside `smoke`. It now costs
+  #    40 seconds. Adding `needs: backend-test` to `smoke` would buy nothing and
+  #    cost eight minutes of wall clock, so it is deliberately absent.
+  #
+  #    It is also where runtime versions are resolved once, so no job pins a
+  #    version the shipped images do not use.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.versions.outputs.python }}
+      node: ${{ steps.versions.outputs.node }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve runtime versions from the Dockerfiles
+        id: versions
+        run: |
+          set -euo pipefail
+          # Single source of truth: the images we actually ship. A hardcoded
+          # "3.12" here drifts silently the moment a base-image bump lands, and
+          # then CI is testing a runtime that is not in production.
+          python_version="$(sed -n 's/^FROM python:\([0-9][0-9]*\.[0-9][0-9]*\)-.*/\1/p' backend/Dockerfile | head -1)"
+          node_version="$(sed -n 's/^FROM node:\([0-9][0-9]*\)[-.].*/\1/p' frontend/Dockerfile | head -1)"
+
+          if [ -z "${python_version}" ]; then
+            echo "::error file=backend/Dockerfile::could not parse a Python version from the FROM line"
+            grep -n '^FROM' backend/Dockerfile
+            exit 1
+          fi
+          if [ -z "${node_version}" ]; then
+            echo "::error file=frontend/Dockerfile::could not parse a Node major from the FROM line"
+            grep -n '^FROM' frontend/Dockerfile
+            exit 1
+          fi
+
+          echo "python=${python_version}" >> "${GITHUB_OUTPUT}"
+          echo "node=${node_version}" >> "${GITHUB_OUTPUT}"
+          echo "python ${python_version}, node ${node_version}"
+
+      - name: Postgres version has not drifted between compose and CI
+        run: |
+          set -euo pipefail
+          # Assert rather than interpolate. GitHub does allow an expression in
+          # services.<id>.image, but a mis-scoped one evaluates to empty and
+          # silently falls back - whereas a failed grep is loud. Dependabot's
+          # docker ecosystem rewrites compose files and never touches a
+          # workflow's `services:` block, so without this the two drift apart
+          # and CI keeps testing the old major forever.
+          tag="$(sed -n 's/^[[:space:]]*image:[[:space:]]*postgres:\(.*\)$/\1/p' docker-compose.yml | head -1)"
+          [ -n "${tag}" ] || { echo "::error file=docker-compose.yml::no postgres image tag found"; exit 1; }
+          if ! grep -qF "image: postgres:${tag}" .github/workflows/ci.yml; then
+            echo "::error file=.github/workflows/ci.yml::docker-compose.yml uses postgres:${tag} but this workflow does not. Update the backend-test service image."
+            exit 1
+          fi
+          echo "both on postgres:${tag}"
+
+      - name: Compose config is valid
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          cp backend/.env.example backend/.env
+          docker compose config -q
+          echo "docker compose config OK"
+
+      - name: Caddyfile is valid
+        run: |
+          set -euo pipefail
+          # A broken Caddyfile previously surfaced only when the smoke job's proxy
+          # refused to start, 15 minutes in.
+          docker run --rm \
+            -v "${PWD}/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -e SITE_ADDRESS=:80 \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Shell scripts
+        run: |
+          set -euo pipefail
+          shellcheck ops/*.sh backend/entrypoint.sh
+
+          # A direct callback to the exit-126 outage: entrypoint.sh shipped mode
+          # 644 while the Dockerfile did CMD ["./entrypoint.sh"], so the app never
+          # ran once. ops/restore.sh discovered non-executable at 2am, during an
+          # actual restore, is the same bug with a worse blast radius.
+          missing=0
+          for f in ops/*.sh backend/entrypoint.sh; do
+            if [ ! -x "$f" ]; then
+              echo "::error file=${f}::script is not executable (git update-index --chmod=+x ${f})"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+  # ---------------------------------------------------------------------------
   # 1. Backend unit/integration tests against a real Postgres 16.
   # ---------------------------------------------------------------------------
   backend-test:
-    name: backend tests (py3.12 + postgres 16)
+    # Stable, version-free name: a required status check cannot be renamed
+    # without silently making the requirement unsatisfiable, and a name
+    # containing "py3.12" becomes a lie the moment the version is derived.
+    name: backend tests
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -50,6 +158,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install OCR system dependencies
         run: |
@@ -68,7 +178,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ needs.validate.outputs.python }}
           cache: pip
           cache-dependency-path: backend/requirements*.txt
 
@@ -105,7 +215,18 @@ jobs:
           # failure mode this whole job exists to prevent.
           # Coverage is REPORTED, never gated. A --cov-fail-under threshold on a
           # young suite only teaches people to write assertion-free tests.
-          pytest -ra --cov=app --cov-report=term-missing
+          # The xml report is uploaded below: until now the number was computed
+          # and then thrown away, so it could never be tracked over time.
+          # Branch coverage comes from [tool.coverage.run] in pyproject.toml.
+          pytest -ra --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
   # 2. Backend lint. Advisory only, for now.
@@ -160,32 +281,22 @@ jobs:
   # ---------------------------------------------------------------------------
   frontend:
     name: frontend build
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      # Read the version out of the Dockerfile rather than pinning it twice. A
-      # hardcoded "24" here silently drifts the moment a base-image bump lands,
-      # and then CI is testing a runtime the image does not ship. Note jsdom
-      # requires ^22.22.2 || ^24.15.0 || >=26.0.0, so an EOL Node fails the
-      # vitest step outright rather than degrading quietly.
-      - name: Resolve the Node version from frontend/Dockerfile
-        id: node
-        run: |
-          version="$(sed -n 's/^FROM node:\([0-9][0-9]*\)[-.].*/\1/p' frontend/Dockerfile | head -1)"
-          if [ -z "${version}" ]; then
-            echo "::error::could not parse a Node major from frontend/Dockerfile"
-            grep -n '^FROM' frontend/Dockerfile
-            exit 1
-          fi
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "building with Node ${version} (from frontend/Dockerfile)"
-
+      # Node major comes from `validate`, which reads it out of
+      # frontend/Dockerfile. Note jsdom requires ^22.22.2 || ^24.15.0 || >=26.0.0,
+      # so an EOL Node fails the vitest step outright rather than degrading
+      # quietly.
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ steps.node.outputs.version }}
+          node-version: ${{ needs.validate.outputs.node }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -200,18 +311,44 @@ jobs:
         # a confusing bundler failure.
         run: npx tsc --noEmit
 
-      - name: Lint (skipped if no lint script exists yet)
-        working-directory: frontend
-        # --if-present: the eslint/vitest wiring is landing in a parallel change,
-        # and the absence of a script must not fail this job.
-        run: npm run lint --if-present
+      # The lint step that used to sit here ran `npm run lint --if-present`
+      # against a package.json with no `lint` script and a repo with no eslint
+      # config anywhere, so it printed a green check for zero work from the day
+      # it was written. `--if-present` was the right intent and the wrong
+      # mechanism: it makes "the tool is not installed" indistinguishable from
+      # "the tool passed". Deleting a step that does nothing is strictly an
+      # improvement; a real one lands with the eslint config.
 
-      - name: Unit tests (skipped if no test script exists yet)
+      - name: Unit tests
         working-directory: frontend
-        # Actions sets CI=true, so vitest runs once instead of entering watch mode.
-        # The step timeout is belt-and-braces in case a watch-mode script lands.
+        # Assert-then-run, which is the general fix for --if-present: it fails
+        # loudly on the day the script genuinely is not there, which is the day
+        # you most need to know. Previously a rename or an accidental deletion of
+        # `test` would have converted the only frontend test gate into a no-op
+        # with a green check.
+        #
+        # Actions sets CI=true, so vitest runs once instead of entering watch
+        # mode. The step timeout is belt-and-braces in case a watch-mode script
+        # lands.
         timeout-minutes: 10
-        run: npm run test --if-present
+        run: |
+          set -euo pipefail
+          if [ "$(npm pkg get scripts.test)" = "{}" ]; then
+            echo "::error file=frontend/package.json::the 'test' script is gone - the only frontend test gate would silently become a no-op"
+            exit 1
+          fi
+          # test:coverage, not test. @vitest/coverage-v8 has been a devDependency
+          # since it landed and nothing has ever invoked it, so no frontend
+          # coverage number has ever existed.
+          npm run test:coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/lcov.info
+          if-no-files-found: warn
 
       - name: Production build
         working-directory: frontend
@@ -229,6 +366,7 @@ jobs:
   # ---------------------------------------------------------------------------
   smoke:
     name: smoke (compose boot + HTTP + OCR round-trip)
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -243,9 +381,15 @@ jobs:
       # plain string - but GET /auth/me then 500s serialising the response.
       SMOKE_ADMIN_EMAIL: smoke-admin@example.com
       SMOKE_ADMIN_PASSWORD: smoke-admin-not-a-secret
+      # Pinned so the image tags built below are exactly the ones compose looks
+      # for. Derived from the directory name it would be "docarchive" anyway, but
+      # relying on that makes a rename silently disable the build cache.
+      COMPOSE_PROJECT_NAME: docarchive
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Synthesize env files from the committed examples
         run: |
@@ -301,10 +445,48 @@ jobs:
           echo "--- backend/.env keys ---"
           grep -oE '^[A-Z_]+=' backend/.env
 
-      - name: docker compose build
+      # Built here rather than by `docker compose build` so the layer cache can be
+      # wired up: without it this job rebuilt python:3.12-slim + apt-get
+      # tesseract-ocr + tesseract-ocr-ita + poppler-utils + a 17-package pip
+      # install from scratch on every run, which was the bulk of the 20-minute
+      # budget.
+      #
+      # The tags are exactly what compose would have produced for this project
+      # (<project>-<service>:latest), which is why COMPOSE_PROJECT_NAME is pinned
+      # in this job's env. `docker compose up` below then finds them and builds
+      # nothing. Bake was the obvious alternative and does not work here: reading
+      # targets from a compose file yields no tags at all, so --load produces
+      # images compose cannot see.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: docarchive-backend:latest
+          load: true
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          tags: docarchive-frontend:latest
+          load: true
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Images are where compose expects them
         run: |
           set -euo pipefail
-          docker compose build
+          # If this assumption ever breaks, `up` would silently rebuild without
+          # the cache and the job would just get slower - a regression nobody
+          # would notice. Fail loudly instead.
+          docker image inspect docarchive-backend:latest >/dev/null
+          docker image inspect docarchive-frontend:latest >/dev/null
+          docker compose config --images
 
       - name: docker compose up --wait
         run: |
