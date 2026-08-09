@@ -23,7 +23,12 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        # ops/deploy.sh exports the real SHA; a plain `docker compose build`
+        # leaves it "unknown", which is honest rather than wrong.
+        GIT_SHA: ${GIT_SHA:-unknown}
     restart: unless-stopped
     logging: *default-logging
     env_file:

@@ -1,0 +1,25 @@
+[Unit]
+Description=DocArchive monthly restore rehearsal
+Documentation=file:///opt/docarchive/ops/RUNBOOK.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/docarchive
+# Restores the newest backup into a PARALLEL set of volumes and proves the
+# documents in it still decrypt. COMPOSE_PROJECT_NAME is what keeps it away from
+# the real archive; do not remove it.
+Environment=COMPOSE_PROJECT_NAME=docarchive-verify
+Environment=API_BASE=http://localhost:8080
+ExecStart=/bin/bash -c 'set -euo pipefail; \
+    latest=$(ls -1t "${BACKUP_DIR:-/var/backups/docarchive}"/20*.tar.age | head -1); \
+    /opt/docarchive/ops/restore.sh --yes-destroy-current-data "$latest"; \
+    /opt/docarchive/ops/verify-backup.sh'
+ExecStopPost=/bin/bash -c 'cd /opt/docarchive && COMPOSE_PROJECT_NAME=docarchive-verify docker compose down -v || true'
+EnvironmentFile=-/etc/docarchive-backup.env
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

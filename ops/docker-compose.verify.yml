@@ -1,0 +1,17 @@
+# Override used ONLY by the restore rehearsal. Never by a human, never in CI's
+# smoke job, never in production.
+#
+# The rest of this repo deliberately has no override files: the fact that
+# docker-compose.yml is *literally* what runs is why the smoke job is
+# trustworthy. The moment `docker compose up` locally stops being the thing CI
+# tests, that value quietly evaporates.
+#
+# This one earns its exception because a rehearsal genuinely must differ: it has
+# to run alongside the real stack without fighting it for ports 80/443.
+#
+#   COMPOSE_PROJECT_NAME=docarchive-verify \
+#   docker compose -f docker-compose.yml -f ops/docker-compose.verify.yml up -d
+services:
+  proxy:
+    ports: !override
+      - "8080:80"

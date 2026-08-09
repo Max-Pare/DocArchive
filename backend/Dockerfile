@@ -1,4 +1,11 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim
+
+# Without this, Python block-buffers stdout when it isn't a TTY, so the
+# migrate-and-seed phase in entrypoint.sh - by far the most failure-prone part of
+# a deploy or a restore - is also the least observable. You end up watching
+# `docker compose logs` show nothing while alembic works.
+ENV PYTHONUNBUFFERED=1
 
 # OCR + PDF rasterization system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,9 +17,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 COPY . .
+
+# Which commit is this? The first question of every incident, and previously
+# unanswerable from a running container. ops/deploy.sh passes the real value.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
+# /app is root-owned (COPY runs before USER), so appuser cannot write .pyc and
+# every cold start re-parses every module. Baking the bytecode in at build time
+# fixes that without chowning the source tree - immutable, root-owned app code is
+# a feature, and the missing .pyc was its only real cost.
+RUN python -m compileall -q /app/app
+
+# Set after compileall, which writes bytecode explicitly. At runtime this only
+# stops the import system writing files it has no permission to write anyway.
+ENV PYTHONDONTWRITEBYTECODE=1
 
 # The exec bit must be set inside the build: a ZIP download, an NTFS checkout, or
 # any copy without -p loses it, and CMD ["./entrypoint.sh"] then fails with exit 126.

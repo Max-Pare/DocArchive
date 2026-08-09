@@ -1,0 +1,20 @@
+[Unit]
+Description=DocArchive encrypted backup
+Documentation=file:///opt/docarchive/ops/RUNBOOK.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Adjust to wherever the repo is checked out on this host.
+WorkingDirectory=/opt/docarchive
+ExecStart=/opt/docarchive/ops/backup.sh
+# BACKUP_DIR, RETENTION_DAYS, RCLONE_REMOTE, HEALTHCHECK_PING_URL.
+# Not committed: the ping URL is a capability, and the rclone remote may name a
+# bucket you would rather not publish in a public repo.
+EnvironmentFile=-/etc/docarchive-backup.env
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
