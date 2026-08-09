@@ -107,14 +107,14 @@ jobs:
       - name: Shell scripts
         run: |
           set -euo pipefail
-          shellcheck ops/*.sh backend/entrypoint.sh
+          shellcheck ops/*.sh backend/entrypoint.sh .github/scripts/*.sh
 
           # A direct callback to the exit-126 outage: entrypoint.sh shipped mode
           # 644 while the Dockerfile did CMD ["./entrypoint.sh"], so the app never
           # ran once. ops/restore.sh discovered non-executable at 2am, during an
           # actual restore, is the same bug with a worse blast radius.
           missing=0
-          for f in ops/*.sh backend/entrypoint.sh; do
+          for f in ops/*.sh backend/entrypoint.sh .github/scripts/*.sh; do
             if [ ! -x "$f" ]; then
               echo "::error file=${f}::script is not executable (git update-index --chmod=+x ${f})"
               missing=1
@@ -392,58 +392,7 @@ jobs:
           persist-credentials: false
 
       - name: Synthesize env files from the committed examples
-        run: |
-          set -euo pipefail
-
-          # Follow the README's Quick start LITERALLY. If .env.example or
-          # backend/.env.example ever stops being sufficient to boot the stack,
-          # this job goes red - documentation drift becomes a build failure
-          # instead of a support conversation.
-          cp .env.example .env
-          cp backend/.env.example backend/.env
-
-          # docker-compose.yml injects DATABASE_URL from POSTGRES_PASSWORD, so a
-          # second copy of the password in backend/.env.example is precisely the
-          # bug that silently broke this deploy. Pin the intent here.
-          if grep -qE '^[[:space:]]*DATABASE_URL=' backend/.env.example; then
-            echo "::error file=backend/.env.example::DATABASE_URL must stay commented out - docker-compose.yml injects it from POSTGRES_PASSWORD. Two copies of the password is how this deploy broke."
-            exit 1
-          fi
-
-          # stdlib only: neither `cryptography` nor `openssl` is guaranteed on the
-          # runner. A Fernet key is just urlsafe-base64 of 32 random bytes.
-          POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-          JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
-          FILE_ENCRYPTION_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
-
-          # ./.env - both keys already exist in the example, so rewrite them in
-          # place rather than appending a second definition.
-          sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" .env
-          sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=:80|" .env
-
-          # A sed that matched nothing is silent, so assert the result. Otherwise
-          # compose fails much later with a far vaguer message.
-          grep -qE '^POSTGRES_PASSWORD=.{16,}$' .env
-          grep -qxF 'SITE_ADDRESS=:80' .env
-
-          # ./backend/.env - append. Compose's env_file parser is last-key-wins,
-          # so these override the placeholders from the example (verified against
-          # `docker compose config`). A step after `up` asserts that this really
-          # happened rather than trusting it.
-          {
-            echo ""
-            echo "# --- injected by CI (.github/workflows/ci.yml) ---"
-            echo "JWT_SECRET=${JWT_SECRET}"
-            echo "FILE_ENCRYPTION_KEY=${FILE_ENCRYPTION_KEY}"
-            echo "ADMIN_EMAIL=${SMOKE_ADMIN_EMAIL}"
-            echo "ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD}"
-          } >> backend/.env
-
-          # Show the shape of the config without printing any value.
-          echo "--- ./.env keys ---"
-          grep -oE '^[A-Z_]+=' .env
-          echo "--- backend/.env keys ---"
-          grep -oE '^[A-Z_]+=' backend/.env
+        run: .github/scripts/synthesize-env.sh
 
       # Built here rather than by `docker compose build` so the layer cache can be
       # wired up: without it this job rebuilt python:3.12-slim + apt-get
@@ -604,43 +553,7 @@ jobs:
           # Render the sample page INSIDE the backend image on purpose: that also
           # proves the image's own Pillow, fonts and tesseract-ita are present,
           # rather than the runner's apt packages.
-          docker compose exec -T backend python3 - <<'PY'
-          from PIL import Image, ImageDraw, ImageFont
-
-          LINES = [
-              "Laboratorio Analisi Cliniche",
-              "Referto di esami ematochimici",
-              "",
-              "Paziente: Mario Rossi",
-              "Data prelievo: 14/03/2024",
-              "",
-              "EMOCROMO COMPLETO",
-              "Globuli rossi        4.85   milioni/uL",
-              "Emoglobina          14.2    g/dL",
-              "Ematocrito          43.1    %",
-              "Globuli bianchi      6.30   migliaia/uL",
-              "PIASTRINE            245    migliaia/uL",
-              "",
-              "Colesterolo totale   192    mg/dL",
-              "Glicemia              89    mg/dL",
-          ]
-
-          # DejaVu ships with the image (the tesseract packages pull it in).
-          # Pillow's scalable built-in font is the fallback so a slimmer base image
-          # cannot break this step - the *bitmap* default font is far too small to
-          # OCR reliably, which is why load_default(size=...) is used.
-          try:
-              font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 34)
-          except OSError:
-              font = ImageFont.load_default(size=34)
-
-          img = Image.new("RGB", (1240, 60 + 46 * len(LINES)), "white")
-          draw = ImageDraw.Draw(img)
-          for i, line in enumerate(LINES):
-              draw.text((50, 30 + 46 * i), line, fill="black", font=font)
-          img.save("/tmp/ocr-sample.png")
-          print("rendered /tmp/ocr-sample.png", img.size)
-          PY
+          docker compose exec -T backend python3 - < .github/scripts/render-sample-referto.py
 
           # Copy it out so the upload travels through Caddy, like a browser's.
           #
@@ -788,3 +701,185 @@ jobs:
           # use plain `docker compose down`. Do not copy this line into a deploy
           # script or a runbook.
           docker compose down -v --remove-orphans
+
+  # ---------------------------------------------------------------------------
+  # 5. Restore rehearsal: prove ops/backup.sh -> ops/restore.sh actually round-trips.
+  #
+  #    Backup verification belongs in TWO places and they test different things.
+  #
+  #    On the host, monthly (ops/systemd/docarchive-verify.timer): verifies the
+  #    DATA and the KEY. Only possible there, because only there are the real
+  #    documents and the real FILE_ENCRYPTION_KEY. CI must never see either.
+  #
+  #    Here: verifies the SCRIPTS. This is what stops ops/restore.sh bit-rotting
+  #    into a file that references a volume name which changed six months ago -
+  #    discovered, otherwise, during an actual disaster.
+  # ---------------------------------------------------------------------------
+  restore-rehearsal:
+    name: restore rehearsal
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      SMOKE_ADMIN_EMAIL: smoke-admin@example.com
+      SMOKE_ADMIN_PASSWORD: smoke-admin-not-a-secret
+      COMPOSE_PROJECT_NAME: docarchive
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install age
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends age
+          age --version
+
+      - name: Synthesize env files from the committed examples
+        run: .github/scripts/synthesize-env.sh
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: docarchive-backend:latest
+          load: true
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          tags: docarchive-frontend:latest
+          load: true
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Boot the stack
+        run: docker compose up -d --wait --wait-timeout 300
+
+      - name: Seed one real, OCR'd document
+        run: |
+          set -euo pipefail
+
+          token="$(curl -fsS -m 30 -X POST http://localhost/api/auth/login \
+            -d "username=${SMOKE_ADMIN_EMAIL}" -d "password=${SMOKE_ADMIN_PASSWORD}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+
+          docker compose exec -T backend python3 - < .github/scripts/render-sample-referto.py
+          rm -f scan-001.png
+          docker compose cp backend:/tmp/ocr-sample.png ./scan-001.png
+
+          doc_id="$(curl -fsS -m 120 -X POST http://localhost/api/documents \
+            -H "Authorization: Bearer ${token}" \
+            -F "file=@scan-001.png;type=image/png" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+
+          # Wait for OCR so the restored archive has ocr_text, which is what makes
+          # verify-backup.sh's full-text assertion meaningful. That assertion is
+          # the one that proves the raw-SQL ix_documents_fts GIN index survived
+          # pg_restore - alembic autogenerate cannot see that index, so nothing
+          # else in this repo would notice it going missing.
+          for _ in $(seq 1 60); do
+            status="$(curl -fsS -m 15 "http://localhost/api/documents/${doc_id}" \
+              -H "Authorization: Bearer ${token}" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+            [ "${status}" = "ocr_done" ] && break
+            sleep 2
+          done
+          [ "${status}" = "ocr_done" ] || { echo "::error::document never reached ocr_done (${status})"; exit 1; }
+
+          # The fingerprint the whole job hinges on: the exact plaintext bytes the
+          # API served BEFORE any backup existed.
+          curl -fsS -m 60 -H "Authorization: Bearer ${token}" \
+            "http://localhost/api/documents/${doc_id}/file" -o original.bin
+          sha256sum original.bin | awk '{print $1}' > original.sha256
+
+          echo "DOC_ID=${doc_id}" >> "${GITHUB_ENV}"
+          echo "seeded document ${doc_id}, $(stat -c%s original.bin) bytes"
+
+      - name: Back up
+        run: |
+          set -euo pipefail
+          # A throwaway keypair generated in-job. The real recipient key in
+          # ops/backup-recipient.txt belongs to the operator, and CI has no
+          # business holding anything that could open a real backup.
+          age-keygen -o "${RUNNER_TEMP}/age.key" 2>/dev/null
+          grep -oP '(?<=^# public key: ).*' "${RUNNER_TEMP}/age.key" > "${RUNNER_TEMP}/recipient.txt"
+
+          BACKUP_DIR="${RUNNER_TEMP}/backups" \
+          RECIPIENT_FILE="${RUNNER_TEMP}/recipient.txt" \
+            ops/backup.sh
+
+          ls -l "${RUNNER_TEMP}/backups"
+
+      - name: Destroy everything
+        run: |
+          set -euo pipefail
+          # `-v` genuinely destroys db_data and file_data. Safe here, and the
+          # entire point: a restore that runs against a stack which was never
+          # actually destroyed proves nothing.
+          docker compose down -v --remove-orphans
+          docker volume ls
+
+      - name: Restore
+        run: |
+          set -euo pipefail
+          # Names are UTC stamps, so lexicographic order IS chronological.
+          # Globbing beats `ls -1t` here: no parsing of ls output.
+          backup="$(printf '%s\n' "${RUNNER_TEMP}"/backups/*.tar.age | sort | tail -1)"
+          AGE_IDENTITY="${RUNNER_TEMP}/age.key" \
+            ops/restore.sh --yes-destroy-current-data "${backup}"
+
+      - name: Verify
+        run: |
+          set -euo pipefail
+          # Names are UTC stamps, so lexicographic order IS chronological.
+          # Globbing beats `ls -1t` here: no parsing of ls output.
+          backup="$(printf '%s\n' "${RUNNER_TEMP}"/backups/*.tar.age | sort | tail -1)"
+          manifest_dir="$(mktemp -d)"
+          age -d -i "${RUNNER_TEMP}/age.key" < "${backup}" \
+            | tar -C "${manifest_dir}" -xf - ./MANIFEST.txt
+
+          ops/verify-backup.sh --manifest "${manifest_dir}/MANIFEST.txt"
+
+      - name: Restored bytes are identical to the originals
+        run: |
+          set -euo pipefail
+          # The end-to-end proof, and the assertion the README used to make
+          # implicitly and never once tested: a restored archive is byte-identical
+          # to what went in. verify-backup.sh checks magic bytes and sizes; this
+          # checks the whole file.
+          token="$(curl -fsS -m 30 -X POST http://localhost/api/auth/login \
+            -d "username=${SMOKE_ADMIN_EMAIL}" -d "password=${SMOKE_ADMIN_PASSWORD}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+
+          curl -fsS -m 60 -H "Authorization: Bearer ${token}" \
+            "http://localhost/api/documents/${DOC_ID}/file" -o restored.bin
+
+          before="$(cat original.sha256)"
+          after="$(sha256sum restored.bin | awk '{print $1}')"
+          echo "before ${before}"
+          echo "after  ${after}"
+          if [ "${before}" != "${after}" ]; then
+            echo "::error::restored document ${DOC_ID} does not match the original"
+            exit 1
+          fi
+          echo "byte-identical after a full destroy-and-restore cycle"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --tail=200 --no-color || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans || true
