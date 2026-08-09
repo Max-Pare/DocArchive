@@ -15,6 +15,11 @@ repos:
       - id: check-yaml
         # Compose/Actions files use YAML the strict parser rejects in places.
         args: [--allow-multiple-documents]
+        # ops/docker-compose.verify.yml uses Compose's `!override` tag, which is
+        # meaningful to Compose and unparseable by a plain YAML loader. Excluding
+        # the file beats --unsafe, which would stop constructing tags everywhere
+        # and quietly weaken this check for the other twelve yaml files.
+        exclude: ^ops/docker-compose\.verify\.yml$
       - id: check-json
       - id: check-toml
       - id: end-of-file-fixer
@@ -48,6 +53,10 @@ repos:
     rev: v0.11.0
     hooks:
       - id: shellcheck
+        # -x makes shellcheck follow `source ops/lib.sh`. Without it every ops
+        # script reports SC1091, because pre-commit passes files one at a time
+        # and shellcheck will not open a file it was not handed.
+        args: [-x]
 
   # Frontend formatting/linting runs from the local workspace so it uses the exact
   # versions in frontend/package-lock.json rather than a second, drifting copy.

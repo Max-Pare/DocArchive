@@ -15,6 +15,7 @@ Two things about the module under test drive the fixture below:
     reset to None whenever the key changes — otherwise a stale cipher silently
     keeps using the previous key.
 """
+
 import base64
 import os
 import re
@@ -361,7 +362,9 @@ def test_tighten_permissions_does_not_follow_symlinks_out_of_the_archive(storage
     assert stat.S_IMODE(outside.stat().st_mode) == 0o644  # untouched
 
 
-def test_tighten_permissions_is_a_noop_when_storage_dir_does_not_exist(storage, monkeypatch, tmp_path):
+def test_tighten_permissions_is_a_noop_when_storage_dir_does_not_exist(
+    storage, monkeypatch, tmp_path
+):
     monkeypatch.setattr(storage.settings, "storage_dir", str(tmp_path / "nope"))
 
     assert storage.tighten_permissions() == 0

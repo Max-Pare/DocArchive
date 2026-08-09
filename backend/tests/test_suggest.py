@@ -1,4 +1,5 @@
 """Pure-logic tests for OCR field suggestion — no DB, no tesseract needed."""
+
 from datetime import date
 
 from app.ocr.suggest import guess_date, guess_visit_type_key, suggest_tags

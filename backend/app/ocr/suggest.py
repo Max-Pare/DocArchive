@@ -3,9 +3,10 @@
 Produces *suggestions* only — the user always confirms/edits. No ML, just
 regex for dates and keyword matching for visit type + tags.
 """
+
 import re
 from datetime import date
-from functools import lru_cache
+from functools import cache
 
 # Italian visit-type keywords -> visit_type.key
 #
@@ -13,8 +14,14 @@ from functools import lru_cache
 # is word-aware now (see _keyword_pattern), so they are no longer needed.
 VISIT_TYPE_KEYWORDS: dict[str, list[str]] = {
     "blood_test": [
-        "emocromo", "esame del sangue", "esami ematici", "prelievo",
-        "analisi del sangue", "glicemia", "colesterolo", "ematochimici",
+        "emocromo",
+        "esame del sangue",
+        "esami ematici",
+        "prelievo",
+        "analisi del sangue",
+        "glicemia",
+        "colesterolo",
+        "ematochimici",
     ],
     "xray": ["radiografia", "rx", "raggi x", "radiogramma"],
     "ct_scan": ["tac", "tomografia computerizzata", "tomografia assiale"],
@@ -40,8 +47,18 @@ _WHOLE_WORD_MAX_LEN = 3
 
 # Month names (Italian) for textual dates
 _IT_MONTHS = {
-    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4, "maggio": 5, "giugno": 6,
-    "luglio": 7, "agosto": 8, "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
+    "gennaio": 1,
+    "febbraio": 2,
+    "marzo": 3,
+    "aprile": 4,
+    "maggio": 5,
+    "giugno": 6,
+    "luglio": 7,
+    "agosto": 8,
+    "settembre": 9,
+    "ottobre": 10,
+    "novembre": 11,
+    "dicembre": 12,
 }
 
 _NUMERIC_DATE = re.compile(r"\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})\b")
@@ -59,19 +76,41 @@ _LABEL_WINDOW = 40
 # birth in its header, above the exam date, which is exactly why taking the first
 # plausible date picked the wrong one.
 _BIRTH_LABELS = (
-    "data di nascita", "data nascita", "nato il", "nata il", "nato/a il", "nat. il",
-    "nascita", "d.n.", "dob",
+    "data di nascita",
+    "data nascita",
+    "nato il",
+    "nata il",
+    "nato/a il",
+    "nat. il",
+    "nascita",
+    "d.n.",
+    "dob",
 )
 
 # Labels that mean "this IS the event date". Listed because a referto often carries
 # several dates - accepted, collected, reported, printed - and these are the ones
 # worth preferring over a bare date with no label at all.
 _EVENT_LABELS = (
-    "data esame", "data dell'esame", "data di esecuzione", "data esecuzione",
-    "eseguito il", "eseguita il", "effettuato il", "effettuata il",
-    "data prelievo", "data del prelievo", "prelievo del", "prelevato il",
-    "data referto", "data del referto", "refertato il", "data accettazione",
-    "data di accettazione", "accettazione del", "data ricovero", "visita del",
+    "data esame",
+    "data dell'esame",
+    "data di esecuzione",
+    "data esecuzione",
+    "eseguito il",
+    "eseguita il",
+    "effettuato il",
+    "effettuata il",
+    "data prelievo",
+    "data del prelievo",
+    "prelievo del",
+    "prelevato il",
+    "data referto",
+    "data del referto",
+    "refertato il",
+    "data accettazione",
+    "data di accettazione",
+    "accettazione del",
+    "data ricovero",
+    "visita del",
     "in data",
 )
 
@@ -105,7 +144,7 @@ def _candidates(text: str) -> list[tuple[date, int]]:
 
 
 def _preceding_label(text: str, offset: int) -> str:
-    return text[max(0, offset - _LABEL_WINDOW):offset].lower()
+    return text[max(0, offset - _LABEL_WINDOW) : offset].lower()
 
 
 def guess_date(text: str) -> date | None:
@@ -154,7 +193,7 @@ def guess_date(text: str) -> date | None:
     return pool[0][0]
 
 
-@lru_cache(maxsize=None)
+@cache
 def _keyword_pattern(keyword: str) -> re.Pattern[str]:
     """Word-aware matcher for one keyword.
 

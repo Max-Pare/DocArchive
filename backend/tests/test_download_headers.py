@@ -8,6 +8,7 @@ only ever defaulted on the way in (documents.py), so nothing stops a future
 import tool, bulk load, or non-conforming client from putting one there. That is
 the case these cover.
 """
+
 from urllib.parse import quote
 
 import pytest

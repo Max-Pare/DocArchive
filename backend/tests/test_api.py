@@ -3,6 +3,7 @@
 Skipped automatically unless TEST_DATABASE_URL points at a reachable Postgres.
 Image OCR is monkeypatched so tesseract is not required to run these.
 """
+
 import io
 from urllib.parse import quote
 
@@ -133,10 +134,16 @@ def test_upload_ocr_suggest_and_search(client):
     assert any(d["id"] == doc_id for d in r.json())
 
     # filter by visit type
-    vt = next(v for v in client.get("/visit_types", headers=_auth(admin_tok)).json()
-              if v["key"] == "blood_test")
-    client.patch(f"/documents/{doc_id}", headers=_auth(admin_tok),
-                 json={"visit_type_id": vt["id"], "doc_date": "2023-03-14"})
+    vt = next(
+        v
+        for v in client.get("/visit_types", headers=_auth(admin_tok)).json()
+        if v["key"] == "blood_test"
+    )
+    client.patch(
+        f"/documents/{doc_id}",
+        headers=_auth(admin_tok),
+        json={"visit_type_id": vt["id"], "doc_date": "2023-03-14"},
+    )
     r = client.get("/documents", headers=_auth(admin_tok), params={"visit_type_id": vt["id"]})
     assert any(d["id"] == doc_id for d in r.json())
 

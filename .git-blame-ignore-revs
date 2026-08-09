@@ -1,0 +1,8 @@
+# Revisions that are pure formatting. Configure git to skip them:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub honours this file automatically.
+
+# style(ruff): format the backend, once
+0ed9a8b26e42e02b51a9356b3ff7c2d4faa931ed

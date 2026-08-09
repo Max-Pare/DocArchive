@@ -4,8 +4,10 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-07-22
 """
-from alembic import op
+
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "0001"
 down_revision = None
@@ -35,7 +37,9 @@ def upgrade() -> None:
     op.create_table(
         "tags",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("owner_id", sa.Integer, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "owner_id", sa.Integer, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("name", sa.String(64), nullable=False),
         sa.UniqueConstraint("owner_id", "name", name="uq_tag_owner_name"),
     )
@@ -44,13 +48,20 @@ def upgrade() -> None:
     op.create_table(
         "documents",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("owner_id", sa.Integer, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "owner_id", sa.Integer, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("original_filename", sa.String(512), nullable=False),
         sa.Column("stored_path", sa.String(1024), nullable=False),
         sa.Column("mime_type", sa.String(128), nullable=False),
         sa.Column("file_size", sa.BigInteger, nullable=False),
         sa.Column("doc_date", sa.Date, nullable=True),
-        sa.Column("visit_type_id", sa.Integer, sa.ForeignKey("visit_types.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "visit_type_id",
+            sa.Integer,
+            sa.ForeignKey("visit_types.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("title", sa.String(512), nullable=True),
         sa.Column("notes", sa.Text, nullable=True),
         sa.Column("status", sa.String(32), nullable=False, server_default="uploaded"),
@@ -65,8 +76,15 @@ def upgrade() -> None:
 
     op.create_table(
         "document_tag",
-        sa.Column("document_id", sa.Integer, sa.ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("tag_id", sa.Integer, sa.ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column(
+            "document_id",
+            sa.Integer,
+            sa.ForeignKey("documents.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tag_id", sa.Integer, sa.ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
+        ),
     )
 
     # Full-text search GIN index over ocr_text + filename (Italian config).

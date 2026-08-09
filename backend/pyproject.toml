@@ -8,6 +8,32 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S", "C4", "SIM", "RUF"]
 
+[tool.ruff.lint.flake8-bugbear]
+# B008 fired 35 times - half of every finding in this codebase - purely because
+# FastAPI's documented calling convention IS a function call in a default
+# argument: `db: Session = Depends(get_db)`, `file: UploadFile = File(...)`.
+# None of them were bugs, and none could be fixed by changing code, so the lint
+# job could never have gone green without this.
+#
+# Deliberately NOT `extend-ignore = ["B008"]`, which would kill the rule for the
+# case it was actually written for. This codebase already has a real bug from
+# evaluating "now" at the wrong moment (app/ocr/suggest.py used the container's
+# local date), so a future `def f(now=datetime.now())` is not hypothetical.
+#
+# Exit condition: migrating to `Annotated[Session, Depends(get_db)]` silences
+# B008 by construction. When that lands, delete this block.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Query",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Security",
+    "fastapi.Cookie",
+]
+
 [tool.ruff.lint.per-file-ignores]
 # assert is the point of a test; the hardcoded credentials are fixtures.
 "tests/*" = ["S101", "S105", "S106"]

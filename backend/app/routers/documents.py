@@ -3,10 +3,17 @@ from datetime import date
 from urllib.parse import quote
 
 from fastapi import (
-    APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.auth.deps import get_current_user
@@ -142,7 +149,11 @@ def list_documents(
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)
-def get_document(doc_id: int, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_document(
+    doc_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     return _get_owned(db, doc_id, current)
 
 
@@ -156,9 +167,12 @@ def update_document(
     doc = _get_owned(db, doc_id, current)
     data = payload.model_dump(exclude_unset=True)
 
-    if "visit_type_id" in data and data["visit_type_id"] is not None:
-        if db.get(VisitType, data["visit_type_id"]) is None:
-            raise HTTPException(status_code=400, detail="Unknown visit_type_id")
+    if (
+        "visit_type_id" in data
+        and data["visit_type_id"] is not None
+        and db.get(VisitType, data["visit_type_id"]) is None
+    ):
+        raise HTTPException(status_code=400, detail="Unknown visit_type_id")
     for field in ("doc_date", "visit_type_id", "title", "notes"):
         if field in data:
             setattr(doc, field, data[field])
@@ -174,7 +188,11 @@ def update_document(
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(doc_id: int, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_document(
+    doc_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     doc = _get_owned(db, doc_id, current)
     stored_path = doc.stored_path
     # Row first, file second. The other order leaves a row whose download 500s if the
@@ -185,7 +203,11 @@ def delete_document(doc_id: int, current: User = Depends(get_current_user), db: 
 
 
 @router.get("/{doc_id}/file")
-def download_file(doc_id: int, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def download_file(
+    doc_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     doc = _get_owned(db, doc_id, current)
     data = read_decrypted(doc.stored_path)
     return StreamingResponse(

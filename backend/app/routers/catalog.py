@@ -34,9 +34,7 @@ def create_visit_type(
 # ---- Tags (per-user) ----
 @router.get("/tags", response_model=list[TagOut])
 def list_tags(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.scalars(
-        select(Tag).where(Tag.owner_id == current.id).order_by(Tag.name)
-    ).all()
+    return db.scalars(select(Tag).where(Tag.owner_id == current.id).order_by(Tag.name)).all()
 
 
 @router.post("/tags", response_model=TagOut, status_code=status.HTTP_201_CREATED)
@@ -45,9 +43,7 @@ def create_tag(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    existing = db.scalar(
-        select(Tag).where(Tag.owner_id == current.id, Tag.name == payload.name)
-    )
+    existing = db.scalar(select(Tag).where(Tag.owner_id == current.id, Tag.name == payload.name))
     if existing:
         return existing
     tag = Tag(owner_id=current.id, name=payload.name)

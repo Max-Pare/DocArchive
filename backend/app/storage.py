@@ -1,3 +1,4 @@
+import contextlib
 import os
 import stat
 import uuid
@@ -17,7 +18,8 @@ def _get_fernet() -> Fernet:
         if not key:
             raise RuntimeError(
                 "FILE_ENCRYPTION_KEY is not set. Generate one with "
-                "python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+                "python -c 'from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())'"
             )
         _fernet = Fernet(key.encode() if isinstance(key, str) else key)
     return _fernet
@@ -75,7 +77,7 @@ def tighten_permissions() -> int:
                 if stat.S_IMODE(os.lstat(path).st_mode) != wanted:
                     os.chmod(path, wanted)
                     changed += 1
-            except OSError:  # noqa: PERF203 - a single unreadable path must not abort the pass
+            except OSError:
                 continue
     return changed
 
@@ -107,10 +109,8 @@ def save_encrypted(data: bytes, owner_id: int) -> tuple[str, int]:
         os.replace(tmp_path, abs_path)
     except BaseException:
         # Do not leave the partial temp file behind for a reaper that does not exist.
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(tmp_path)
-        except FileNotFoundError:
-            pass
         raise
     return rel_path.replace("\\", "/"), len(data)
 
@@ -122,7 +122,5 @@ def read_decrypted(stored_path: str) -> bytes:
 
 
 def delete_file(stored_path: str) -> None:
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.remove(_resolve(stored_path))
-    except FileNotFoundError:
-        pass

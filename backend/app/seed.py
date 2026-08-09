@@ -2,6 +2,7 @@
 
 Idempotent. Run after migrations:  python -m app.seed
 """
+
 from sqlalchemy import select
 
 from app.auth.security import hash_password
