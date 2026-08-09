@@ -22,5 +22,14 @@ export default defineConfig({
     setupFiles: "./src/test/setup.ts",
     // components import styles.css only via main.tsx; skip CSS processing entirely
     css: false,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "lcov"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/main.tsx", "src/vite-env.d.ts", "src/test/**", "**/*.test.*"],
+      // No thresholds yet. @vitest/coverage-v8 has been installed and unused
+      // since it landed, so the first job of this config is simply to make the
+      // number visible; a ratchet gets set from that measurement later.
+    },
   },
 });

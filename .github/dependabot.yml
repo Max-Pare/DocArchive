@@ -97,18 +97,19 @@ updates:
       - dependencies
       - docker
     ignore:
-      # The Python runtime is a coordinated change, not a dependency bump. The
-      # backend-tests job pins 3.12 to match this image, and psycopg2-binary
-      # ships no cp314 wheel - so an automatic 3.14 bump does not merely drift
-      # from what CI tests, it fails the image build outright while pip tries to
-      # compile psycopg2 from source. Bump it by hand, together with CI.
+      # A Python MAJOR is a coordinated change, not a dependency bump:
+      # psycopg2-binary ships no cp314 wheel, so an automatic 3.14 bump fails the
+      # image build outright while pip tries to compile psycopg2 from source.
+      # Bump it by hand.
       #
-      # Node is deliberately NOT ignored: the frontend job reads its version out
-      # of frontend/Dockerfile, so a node bump cannot drift from what CI runs.
+      # The MINOR ignore is gone. It only existed because the workflow hardcoded
+      # "3.12" in two places, so a 3.12 -> 3.13 bump would have left CI testing a
+      # runtime the image no longer shipped. The `validate` job now reads the
+      # version out of backend/Dockerfile, so a minor bump is fully tested by the
+      # PR that proposes it - which is the same reason Node was never ignored.
       - dependency-name: python
         update-types:
           - version-update:semver-major
-          - version-update:semver-minor
     groups:
       docker-minor-and-patch:
         applies-to: version-updates

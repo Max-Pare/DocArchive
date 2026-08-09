@@ -14,6 +14,19 @@ select = ["E", "F", "I", "UP", "B", "S", "C4", "SIM", "RUF"]
 # Alembic's generated templates aren't ours to restyle.
 "alembic/versions/*" = ["E501"]
 
+[tool.coverage.run]
+source = ["app"]
+# Branch coverage, not line coverage. The defects in this codebase live in error
+# paths - a swallowed exception, an unhandled rollback - and line coverage counts
+# an `if` as covered when only the happy side ever runs.
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# No fail_under yet, deliberately. The real number is unknown, and a threshold
+# picked before you can see it either does nothing or forces assertion-free
+# tests. It gets set from a measurement once the coverage PRs land.
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # So `pytest` works from any cwd, not just backend/.
