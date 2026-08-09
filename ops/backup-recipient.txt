@@ -1,0 +1,5 @@
+# age PUBLIC key for DocArchive backups. Not a secret; belongs in version control.
+# ops/backup.sh encrypts to this, so the backup job holds no credential.
+# The matching PRIVATE key opens a backup and lives ONLY in the password manager.
+# Generated 2026-08-09. See ops/RUNBOOK.md - "First-time setup".
+age19lqewp52gwumkxhhnkx6gq9v6l9t908zep6kejc8av7jgqajge5sfp8mk3

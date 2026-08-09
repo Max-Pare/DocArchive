@@ -1,0 +1,24 @@
+# Override used ONLY by the restore rehearsal. Never by a human, never in CI's
+# smoke job, never in production.
+#
+# The rest of this repo deliberately has no override files: the fact that
+# docker-compose.yml is *literally* what runs is why the smoke job is
+# trustworthy. The moment `docker compose up` locally stops being the thing CI
+# tests, that value quietly evaporates.
+#
+# This one earns its exception because a rehearsal genuinely must differ: it has
+# to run alongside the real stack without fighting it for ports 80/443.
+#
+#   COMPOSE_PROJECT_NAME=docarchive-verify \
+#   COMPOSE_FILE=docker-compose.yml:ops/docker-compose.verify.yml \
+#   ops/restore.sh --yes-destroy-current-data <backup>
+#
+# `!override` replaces the port list rather than appending to it, so 443 is gone
+# too - a rehearsal has no business asking Caddy for a certificate.
+#
+# The port is configurable because 8080 is the single most contended port on any
+# development machine; the first rehearsal here died on exactly that.
+services:
+  proxy:
+    ports: !override
+      - "${VERIFY_HTTP_PORT:-18080}:80"

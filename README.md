@@ -52,7 +52,17 @@ suggests date / visit type / tags — always editable, never auto-committed.
    (e.g. `https://docarchive.example.com`), and change `ADMIN_EMAIL` / `ADMIN_PASSWORD`
    — the first admin is created from these on first boot.
 
-2. **Launch**
+2. **Back up `FILE_ENCRYPTION_KEY` before you upload anything.**
+
+   Put it in a password manager, and write it down on paper. It is 44 characters
+   and it is the only thing standing between you and permanent, total loss of every
+   original document. There is no recovery, no escrow and no rotation.
+
+   The asymmetry surprises people: if the key is lost, Postgres still holds every
+   document's metadata *and* its full OCR'd text. The content survives — the
+   originals do not.
+
+3. **Launch**
 
    ```bash
    docker compose up -d --build
@@ -61,7 +71,7 @@ suggests date / visit type / tags — always editable, never auto-committed.
    On startup the backend runs Alembic migrations and seeds visit types + the admin
    user automatically. App is served at `SITE_ADDRESS`.
 
-3. **Log in** with `ADMIN_EMAIL` / `ADMIN_PASSWORD`, then go to **Utenti** to create
+4. **Log in** with `ADMIN_EMAIL` / `ADMIN_PASSWORD`, then go to **Utenti** to create
    family accounts.
 
 ---
@@ -148,11 +158,23 @@ npm run typecheck              # tsc --noEmit
 6. Log in as a different user → confirm the document is **not** visible (isolation).
 7. Open the document → the preview renders the original; download matches the upload.
 
-## Backups (VPS)
+## Backups, restore, upgrades
 
-- Database: `docker compose exec db pg_dump -U docarchive docarchive > backup.sql`
-- Files: back up the `file_data` volume (`/var/lib/docker/volumes/...`) **and** keep
-  `FILE_ENCRYPTION_KEY` somewhere safe — without it the encrypted files are useless.
+See **[ops/RUNBOOK.md](ops/RUNBOOK.md)**. Short version:
+
+```bash
+ops/backup.sh      # one encrypted, checksummed, self-describing archive
+ops/restore.sh --yes-destroy-current-data <file>
+ops/verify-backup.sh   # proves the restored documents actually decrypt
+ops/deploy.sh      # backup, pull, build, up, then assert it really came up
+```
+
+A backup contains the database dump, both volumes, the `.env` files, and a manifest
+recording the commit, the Alembic revision and the image digests. It is encrypted to
+an age public key, so the backup job holds no secret; only restore needs the private
+key. That is not optional: `documents.ocr_text` is stored in Postgres in **cleartext**,
+so the dump contains the full text of every document and is exactly as sensitive as
+the encrypted files.
 
 ## Security notes
 

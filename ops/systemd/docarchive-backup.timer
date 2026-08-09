@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly DocArchive backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Catches a run missed while the machine was off. This is the single reason to
+# prefer a systemd timer over cron here: a laptop or a rebooted VPS would
+# otherwise silently skip a night, and nothing would say so.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

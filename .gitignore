@@ -5,6 +5,8 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Env / secrets
 # `.env*` (not just `*.env`) so .env.local, .env.prod and .env.bak.* are covered too.

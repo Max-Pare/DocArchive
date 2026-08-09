@@ -1,0 +1,20 @@
+# Copy to ops/backup-recipient.txt and put YOUR age public key below.
+#
+# This is a PUBLIC key. It is not a secret and it belongs in version control -
+# that is the whole point. It lets ops/backup.sh encrypt a backup without
+# holding any secret itself, so an unattended nightly job needs no credential.
+#
+# The matching PRIVATE key is what opens a backup. It lives only in your
+# password manager. If you lose it you cannot restore, so treat it exactly like
+# FILE_ENCRYPTION_KEY.
+#
+# Generate the pair once:
+#
+#     mkdir -p ~/.config/age && chmod 700 ~/.config/age
+#     age-keygen -o ~/.config/age/docarchive.txt
+#     chmod 600 ~/.config/age/docarchive.txt
+#
+# age-keygen prints "Public key: age1..." - that line goes here, and the file
+# it wrote goes into your password manager.
+
+age1replace_this_with_your_own_public_key

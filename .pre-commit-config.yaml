@@ -41,6 +41,14 @@ repos:
     hooks:
       - id: gitleaks
 
+  # ops/ is four shell scripts that run when the archive is already in trouble.
+  # That is exactly the code you do not want to debug by discovering an unquoted
+  # variable during a restore.
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.11.0
+    hooks:
+      - id: shellcheck
+
   # Frontend formatting/linting runs from the local workspace so it uses the exact
   # versions in frontend/package-lock.json rather than a second, drifting copy.
   # Enable once eslint/prettier land in the quality wave.
