@@ -120,18 +120,12 @@ def test_upload_ocr_suggest_and_search(client):
     assert r.status_code == 200, r.text
     sug = r.json()
     assert sug["doc_date"] == "2023-03-14"
-    # Pins ACTUAL behaviour, which is not the desirable behaviour. The stub text is
-    # "Referto del 14/03/2023 EMOCROMO completo glicemia": guess_visit_type_key picks
-    # the earliest-matching keyword, and "referto" sits at position 0, so the generic
-    # `report` shadows the specific `blood_test`. This assertion originally read
-    # "blood_test" and had simply never executed.
-    #
-    # It is a real defect, not just a test artifact: uploading a scan headed
-    # "Referto: ESAME EMOCROMOCITOMETRICO" through the running stack also yields
-    # `report`. Because "referto" heads nearly every Italian medical document,
-    # position-based matching collapses most documents to `report`. Ranking by
-    # keyword specificity instead of position is deferred to the suggestion rework.
-    assert sug["visit_type_key"] == "report"
+    # The stub text is "Referto del 14/03/2023 EMOCROMO completo glicemia". This
+    # assertion read "report" until the suggestion rework: guess_visit_type_key
+    # ranked by keyword position, so the "Referto" heading that tops nearly every
+    # Italian medical document shadowed whatever the document was actually about.
+    # "report" is now a fallback bucket, consulted only when nothing specific hits.
+    assert sug["visit_type_key"] == "blood_test"
     assert sug["status"] == "ocr_done"
 
     # full-text search should find it by an OCR'd word

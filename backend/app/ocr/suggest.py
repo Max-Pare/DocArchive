@@ -5,22 +5,38 @@ regex for dates and keyword matching for visit type + tags.
 """
 import re
 from datetime import date
+from functools import lru_cache
 
 # Italian visit-type keywords -> visit_type.key
+#
+# The trailing spaces that used to disambiguate "rx " and "rm " are gone: matching
+# is word-aware now (see _keyword_pattern), so they are no longer needed.
 VISIT_TYPE_KEYWORDS: dict[str, list[str]] = {
     "blood_test": [
         "emocromo", "esame del sangue", "esami ematici", "prelievo",
         "analisi del sangue", "glicemia", "colesterolo", "ematochimici",
     ],
-    "xray": ["radiografia", "rx ", "raggi x", "radiogramma"],
+    "xray": ["radiografia", "rx", "raggi x", "radiogramma"],
     "ct_scan": ["tac", "tomografia computerizzata", "tomografia assiale"],
-    "mri": ["risonanza magnetica", "rmn", "rm "],
+    "mri": ["risonanza magnetica", "rmn", "rm"],
     "ultrasound": ["ecografia", "ecografico", "ecodoppler", "eco addome"],
     "ecg": ["elettrocardiogramma", "ecg", "holter"],
     "report": ["referto", "relazione clinica", "visita specialistica", "lettera di dimissione"],
     "prescription": ["prescrizione", "ricetta", "impegnativa", "piano terapeutico"],
     "vaccination": ["vaccino", "vaccinazione", "certificato vaccinale"],
 }
+
+# "report" is the shape of the document, not the kind of examination. Nearly every
+# Italian medical document is headed "REFERTO", so ranking it alongside the others
+# let it shadow whatever the document is actually about. It is now a fallback,
+# consulted only when nothing more specific matched.
+_GENERIC_KEYS = frozenset({"report"})
+
+# Below this length a keyword must match as a whole word; at or above it, a leading
+# word boundary is enough. Both halves matter: "tac" as a prefix would fire on
+# "tachicardia", while "emocromo" as a whole word would MISS
+# "emocromocitometrico", which is how the exam is actually named on a referto.
+_WHOLE_WORD_MAX_LEN = 3
 
 # Month names (Italian) for textual dates
 _IT_MONTHS = {
@@ -138,24 +154,75 @@ def guess_date(text: str) -> date | None:
     return pool[0][0]
 
 
+@lru_cache(maxsize=None)
+def _keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """Word-aware matcher for one keyword.
+
+    Plain substring matching produced false positives that read as nonsense to a
+    user: "tac" fired on "contatto", "ecg" on any token containing it. A leading
+    word boundary fixes those. Short abbreviations get a trailing boundary too,
+    otherwise "tac" still fires on "tachicardia".
+    """
+    escaped = re.escape(keyword)
+    if len(keyword) <= _WHOLE_WORD_MAX_LEN:
+        return re.compile(rf"\b{escaped}\b", re.IGNORECASE)
+    return re.compile(rf"\b{escaped}", re.IGNORECASE)
+
+
+def _matches(text: str, keywords: list[str]) -> tuple[int, int] | None:
+    """(distinct keywords hit, offset of the earliest hit), or None if nothing hit."""
+    hits, first = 0, None
+    for keyword in keywords:
+        found = _keyword_pattern(keyword).search(text)
+        if found:
+            hits += 1
+            first = found.start() if first is None else min(first, found.start())
+    return None if first is None else (hits, first)
+
+
 def guess_visit_type_key(text: str) -> str | None:
-    low = text.lower()
-    best_key, best_pos = None, None
-    for key, words in VISIT_TYPE_KEYWORDS.items():
-        for w in words:
-            pos = low.find(w)
-            if pos != -1 and (best_pos is None or pos < best_pos):
-                best_key, best_pos = key, pos
-    return best_key
+    """Which kind of examination the document is about.
+
+    Used to return whichever keyword appeared earliest in the text, which meant the
+    "REFERTO" heading at the top beat the exam named below it, and almost every
+    document was suggested as a generic report. Ranking now is:
+
+      1. specific types before the generic "report" bucket;
+      2. among those, the type with the most distinct keywords present - a blood
+         panel says emocromo AND glicemia AND prelievo, a passing mention says one;
+      3. ties broken by whichever appeared first, which is the old behaviour and
+         still the right answer when two exams are named with equal weight.
+    """
+    scored: list[tuple[int, int, str]] = []
+    for key, keywords in VISIT_TYPE_KEYWORDS.items():
+        if key in _GENERIC_KEYS:
+            continue
+        found = _matches(text, keywords)
+        if found:
+            hits, position = found
+            scored.append((-hits, position, key))
+    if scored:
+        return min(scored)[2]
+
+    for key in _GENERIC_KEYS:
+        if _matches(text, VISIT_TYPE_KEYWORDS[key]):
+            return key
+    return None
 
 
 def suggest_tags(text: str, limit: int = 6) -> list[str]:
-    """Cheap keyword tags: matched visit-type synonyms present in the text."""
-    low = text.lower()
-    found: list[str] = []
-    for words in VISIT_TYPE_KEYWORDS.values():
-        for w in words:
-            token = w.strip()
-            if token and token in low and token not in found:
-                found.append(token)
-    return found[:limit]
+    """Cheap keyword tags: matched visit-type synonyms present in the text.
+
+    Same word-aware matching as the visit type, so a document mentioning "contatto"
+    no longer gets tagged "tac". Generic keywords are ordered last rather than
+    dropped - "referto" is a fair tag, just not a useful one to spend the limit on
+    when the document also says "emocromo".
+    """
+    specific: list[str] = []
+    generic: list[str] = []
+    for key, keywords in VISIT_TYPE_KEYWORDS.items():
+        bucket = generic if key in _GENERIC_KEYS else specific
+        for keyword in keywords:
+            if _keyword_pattern(keyword).search(text) and keyword not in bucket:
+                bucket.append(keyword)
+    return (specific + generic)[:limit]
